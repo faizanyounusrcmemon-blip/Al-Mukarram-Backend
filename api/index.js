@@ -9,7 +9,7 @@ const app = express();
 // ✅ CORS FIX FOR VERCEL CREDENTIALS
 // ==========================
 const allowedOrigins = [
-  "https://makki-madni-travel-software.vercel.app",
+  "https://al-mukarram-software.vercel.app",
   "http://localhost:5173", // Local testing ke liye (Vite default)
   "http://localhost:3000"  // Local testing ke liye (CRA default)
 ];
