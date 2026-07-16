@@ -20,116 +20,118 @@ router.post("/save", async (req, res) => {
 
     // ===============================
     // EDIT MODE (UPDATE)
-// ===============================
+    // ===============================
     if (d.ref_no) {
       await db.query(
         `
         UPDATE bookings SET
-          customer_name=$2,
-          contact_no=$3,
-          booking_date=$4,
+          customer_code=$2, -- ⚡ Naya customer_code column dynamic update
+          customer_name=$3,
+          contact_no=$4,
+          booking_date=$5,
 
-          adult_count=$5,
-          adult_rate=$6,
-          child_count=$7,
-          child_rate=$8,
-          infant_count=$9,
-          infant_rate=$10,
-          flight_total=$11,
+          adult_count=$6,
+          adult_rate=$7,
+          child_count=$8,
+          child_rate=$9,
+          infant_count=$10,
+          infant_rate=$11,
+          flight_total=$12,
 
-          flights=$12::jsonb,
-          hotels=$13::jsonb,
-          hotels_total=$14,
+          flights=$13::jsonb,
+          hotels=$14::jsonb,
+          hotels_total=$15,
 
-          visa=$15::jsonb,
+          visa=$16::jsonb,
 
-          transport=$16::jsonb,
-          transport_total=$17,
+          transport=$17::jsonb,
+          transport_total=$18,
 
-          ziyarat=$18::jsonb,
-          ziyarat_total=$19,
+          ziyarat=$19::jsonb,
+          ziyarat_total=$20,
 
-          flight_sar_total=$20,
-          hotel_sar_total=$21,
-          visa_sar_total=$22,
-          transport_sar_total=$23,
-          ziyarat_sar_total=$24,
+          flight_sar_total=$21,
+          hotel_sar_total=$22,
+          visa_sar_total=$23,
+          transport_sar_total=$24,
+          ziyarat_sar_total=$25,
 
-          flight_sar_rate=$25,
-          hotel_sar_rate=$26,
-          visa_sar_rate=$27,
-          transport_sar_rate=$28,
-          ziyarat_sar_rate=$29,
+          flight_sar_rate=$26,
+          hotel_sar_rate=$27,
+          visa_sar_rate=$28,
+          transport_sar_rate=$29,
+          ziyarat_sar_rate=$30,
 
-          flight_pkr_total=$30,
-          hotel_pkr_total=$31,
-          visa_pkr_total=$32,
-          transport_pkr_total=$33,
-          ziyarat_pkr_total=$34,
+          flight_pkr_total=$31,
+          hotel_pkr_total=$32,
+          visa_pkr_total=$33,
+          transport_pkr_total=$34,
+          ziyarat_pkr_total=$35,
 
-          net_pkr_total=$35,
-          total_sar=$36,
-          total_pkr=$37,
-          per_person_qty=$38,
-          per_person_final=$39,
-          adult_per_person=$40,
-          child_per_person=$41,
-          infant_per_person=$42
+          net_pkr_total=$36,
+          total_sar=$37,
+          total_pkr=$38,
+          per_person_qty=$39,
+          per_person_final=$40,
+          adult_per_person=$41,
+          child_per_person=$42,
+          infant_per_person=$43
 
         WHERE ref_no=$1
         `,
         [
           d.ref_no,
-          d.customer_name,
-          d.contact_no,
-          d.booking_date,
+          d.customer_code || null, // ⚡ $2
+          d.customer_name,         // $3
+          d.contact_no,            // $4
+          d.booking_date,          // $5
 
-          d.adult_count,
-          d.adult_rate,
-          d.child_count,
-          d.child_rate,
-          d.infant_count,
-          d.infant_rate,
-          d.flight_total,
+          d.adult_count,           // $6
+          d.adult_rate,            // $7
+          d.child_count,           // $8
+          d.child_rate,            // $9
+          d.infant_count,          // $10
+          d.infant_rate,           // $11
+          d.flight_total,          // $12
 
-          JSON.stringify(d.flights || []),
-          JSON.stringify(d.hotels || []),
-          d.hotels_total,
+          JSON.stringify(d.flights || []), // $13
+          JSON.stringify(d.hotels || []),  // $14
+          d.hotels_total,                  // $15
 
-          JSON.stringify(d.visa || []),
+          JSON.stringify(d.visa || []),    // $16
 
-          JSON.stringify(d.transport || []),
-          d.transport_total,
+          JSON.stringify(d.transport || []), // $17
+          d.transport_total,                 // $18
 
-          JSON.stringify(d.ziyarat || []),
-          d.ziyarat_total,
+          JSON.stringify(d.ziyarat || []),   // $19
+          d.ziyarat_total,                   // $20
 
-          d.flight_sar_total,
-          d.hotel_sar_total,
-          d.visa_sar_total,
-          d.transport_sar_total,
-          d.ziyarat_sar_total,
+          d.flight_sar_total,      // $21
+          d.hotel_sar_total,       // $22
+          d.visa_sar_total,        // $23
+          d.transport_sar_total,   // $24
+          d.ziyarat_sar_total,     // $25
 
-          d.flight_sar_rate,
-          d.hotel_sar_rate,
-          d.visa_sar_rate,
-          d.transport_sar_rate,
-          d.ziyarat_sar_rate,
+          d.flight_sar_rate,       // $26
+          d.hotel_sar_rate,        // $27
+          d.visa_sar_rate,         // $28
+          d.transport_sar_rate,    // $29
+          d.ziyarat_sar_rate,      // $30
 
-          d.flight_pkr_total,
-          d.hotel_pkr_total,
-          d.visa_pkr_total,
-          d.transport_pkr_total,
-          d.ziyarat_pkr_total,
+          d.flight_pkr_total,      // $31
+          d.hotel_pkr_total,       // $32
+          d.visa_pkr_total,        // $33
+          d.transport_pkr_total,   // $34
+          d.ziyarat_pkr_total,     // $35
 
-          d.net_pkr_total,
-          d.total_sar,
-          d.total_pkr,
-          d.per_person_qty,
-          d.per_person_final,
-          d.adult_per_person,
-          d.child_per_person,
-          d.infant_per_person
+          d.net_pkr_total,         // $36
+          d.total_sar,             // $37
+          d.total_pkr,             // $38
+          d.per_person_qty,        // $39
+          d.per_person_final,      // $40
+          d.adult_per_person,      // $41
+          d.child_per_person,      // $42
+          d.infant_per_person      // $43
         ]
       );
 
@@ -138,13 +140,13 @@ router.post("/save", async (req, res) => {
 
     // ===============================
     // NEW MODE (INSERT)
-// ===============================
+    // ===============================
     const ref_no = await generateRefNo();
 
     await db.query(
       `
       INSERT INTO bookings (
-        ref_no, customer_name, contact_no, booking_date,
+        ref_no, customer_code, customer_name, contact_no, booking_date,
 
         adult_count, adult_rate, child_count, child_rate,
         infant_count, infant_rate, flight_total,
@@ -170,72 +172,73 @@ router.post("/save", async (req, res) => {
         per_person_qty, per_person_final, adult_per_person, child_per_person, infant_per_person
       )
       VALUES (
-        $1,$2,$3,$4,
-        $5,$6,$7,$8,
-        $9,$10,$11,
-        $12::jsonb,$13::jsonb,$14,
-        $15::jsonb,
-        $16::jsonb,$17,
-        $18::jsonb,$19,
-        $20,$21,$22,$23,$24,
-        $25,$26,$27,$28,$29,
-        $30,$31,$32,$33,$34,
-        $35,$36,$37,
-        $38,$39,$40,$41,$42
+        $1,$2,$3,$4,$5,
+        $6,$7,$8,$9,
+        $10,$11,$12,
+        $13::jsonb,$14::jsonb,$15,
+        $16::jsonb,
+        $17::jsonb,$18,
+        $19::jsonb,$20,
+        $21,$22,$23,$24,$25,
+        $26,$27,$28,$29,$30,
+        $31,$32,$33,$34,$35,
+        $36,$37,$38,
+        $39,$40,$41,$42,$43
       )
       `,
       [
         ref_no,
-        d.customer_name,
-        d.contact_no,
-        d.booking_date,
+        d.customer_code || null, // ⚡ $2
+        d.customer_name,         // $3
+        d.contact_no,            // $4
+        d.booking_date,          // $5
 
-        d.adult_count,
-        d.adult_rate,
-        d.child_count,
-        d.child_rate,
-        d.infant_count,
-        d.infant_rate,
-        d.flight_total,
+        d.adult_count,           // $6
+        d.adult_rate,            // $7
+        d.child_count,           // $8
+        d.child_rate,            // $9
+        d.infant_count,          // $10
+        d.infant_rate,           // $11
+        d.flight_total,          // $12
 
-        JSON.stringify(d.flights || []),
-        JSON.stringify(d.hotels || []),
-        d.hotels_total,
+        JSON.stringify(d.flights || []), // $13
+        JSON.stringify(d.hotels || []),  // $14
+        d.hotels_total,                  // $15
 
-        JSON.stringify(d.visa || []),
+        JSON.stringify(d.visa || []),    // $16
 
-        JSON.stringify(d.transport || []),
-        d.transport_total,
+        JSON.stringify(d.transport || []), // $17
+        d.transport_total,                 // $18
 
-        JSON.stringify(d.ziyarat || []),
-        d.ziyarat_total,
+        JSON.stringify(d.ziyarat || []),   // $19
+        d.ziyarat_total,                   // $20
 
-        d.flight_sar_total,
-        d.hotel_sar_total,
-        d.visa_sar_total,
-        d.transport_sar_total,
-        d.ziyarat_sar_total,
+        d.flight_sar_total,      // $21
+        d.hotel_sar_total,       // $22
+        d.visa_sar_total,        // $23
+        d.transport_sar_total,   // $24
+        d.ziyarat_sar_total,     // $25
 
-        d.flight_sar_rate,
-        d.hotel_sar_rate,
-        d.visa_sar_rate,
-        d.transport_sar_rate,
-        d.ziyarat_sar_rate,
+        d.flight_sar_rate,       // $26
+        d.hotel_sar_rate,        // $27
+        d.visa_sar_rate,         // $28
+        d.transport_sar_rate,    // $29
+        d.ziyarat_sar_rate,      // $30
 
-        d.flight_pkr_total,
-        d.hotel_pkr_total,
-        d.visa_pkr_total,
-        d.transport_pkr_total,
-        d.ziyarat_pkr_total,
+        d.flight_pkr_total,      // $31
+        d.hotel_pkr_total,       // $32
+        d.visa_pkr_total,        // $33
+        d.transport_pkr_total,   // $34
+        d.ziyarat_pkr_total,     // $35
 
-        d.net_pkr_total,
-        d.total_sar,
-        d.total_pkr,
-        d.per_person_qty,
-        d.per_person_final,
-        d.adult_per_person,
-        d.child_per_person,
-        d.infant_per_person
+        d.net_pkr_total,         // $36
+        d.total_sar,             // $37
+        d.total_pkr,             // $38
+        d.per_person_qty,        // $39
+        d.per_person_final,      // $40
+        d.adult_per_person,      // $41
+        d.child_per_person,      // $42
+        d.infant_per_person      // $43
       ]
     );
 
@@ -297,16 +300,12 @@ router.get("/voucher/:ref", async (req, res) => {
 router.delete("/delete/:ref", async (req, res) => {
   try {
     const { ref } = req.params;
-    // 🌟 Frontend se bheja gaya password req.body se nikala
     const { password } = req.body;
 
     if (!password) {
       return res.json({ success: false, message: "❌ Delete password is required!" });
     }
 
-    // ===============================================
-    // 🔍 LIVE PASSWORD LOOKUP FROM system_passwords TABLE
-    // ===============================================
     const passCheck = await db.query(
       "SELECT password_val FROM public.system_passwords WHERE key_name = 'delete_pass'"
     );
@@ -317,14 +316,10 @@ router.delete("/delete/:ref", async (req, res) => {
 
     const currentDeletePass = passCheck.rows[0].password_val;
 
-    // Validate if entered password matches the database value
     if (password !== currentDeletePass) {
       return res.json({ success: false, message: "❌ Incorrect Delete Password! Access Denied 😎" });
     }
 
-    // ===============================
-    // CHECK IF PURCHASE ENTRIES EXIST
-    // ===============================
     const purchaseCheck = await db.query(
       `SELECT SUM(purchase_pkr) AS total
        FROM purchase_entries
@@ -339,9 +334,6 @@ router.delete("/delete/:ref", async (req, res) => {
       });
     }
 
-    // ===============================
-    // CHECK IF PAYMENT RECEIVED
-    // ===============================
     const paymentCheck = await db.query(
       `SELECT SUM(amount) AS total
        FROM customer_payments
@@ -356,9 +348,6 @@ router.delete("/delete/:ref", async (req, res) => {
       });
     }
 
-    // ===============================
-    // SOFT DELETE
-    // ===============================
     const q = await db.query(
       `UPDATE bookings
        SET is_deleted = true
@@ -394,6 +383,5 @@ router.get("/get-deleted/:ref", async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
-
 
 module.exports = router;

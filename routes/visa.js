@@ -17,6 +17,7 @@ router.post("/save", async (req, res) => {
   try {
     const {
       ref_no,
+      customer_code, // Received customer_code from payload
       customer_name,
       booking_date,
       rows,
@@ -36,10 +37,11 @@ router.post("/save", async (req, res) => {
 
       await db.query(
         `INSERT INTO visa
-         (ref_no, customer_name, booking_date, rows, persons, total_sar, pkr_rate, total_pkr)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+         (ref_no, customer_code, customer_name, booking_date, rows, persons, total_sar, pkr_rate, total_pkr)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [
           finalRef,
+          customer_code || null, // Saved to DB (can be null for Walk-In)
           customer_name,
           booking_date,
           JSON.stringify(rows || []),
@@ -53,15 +55,17 @@ router.post("/save", async (req, res) => {
       // 🔹 UPDATE EXISTING
       await db.query(
         `UPDATE visa SET
-           customer_name=$1,
-           booking_date=$2,
-           rows=$3,
-           persons=$4,
-           total_sar=$5,
-           pkr_rate=$6,
-           total_pkr=$7
-         WHERE ref_no=$8`,
+           customer_code=$1,
+           customer_name=$2,
+           booking_date=$3,
+           rows=$4,
+           persons=$5,
+           total_sar=$6,
+           pkr_rate=$7,
+           total_pkr=$8
+         WHERE ref_no=$9`,
         [
+          customer_code || null, // Saved to DB (can be null for Walk-In)
           customer_name,
           booking_date,
           JSON.stringify(rows || []),
@@ -102,16 +106,12 @@ router.get("/get/:ref", async (req, res) => {
 router.delete("/delete/:ref_no", async (req, res) => {
   try {
     const { ref_no } = req.params;
-    // 1. Frontend se password receive karna (req.body se)
     const { password } = req.body; 
 
     if (!password) {
       return res.json({ success: false, message: "❌ Delete password is required!" });
     }
 
-    // ===============================================
-    // 🔍 LIVE PASSWORD LOOKUP FROM system_passwords TABLE
-    // ===============================================
     const passCheck = await db.query(
       "SELECT password_val FROM public.system_passwords WHERE key_name = 'delete_pass'"
     );
@@ -122,14 +122,10 @@ router.delete("/delete/:ref_no", async (req, res) => {
 
     const currentDeletePass = passCheck.rows[0].password_val;
 
-    // Validate if password matches
     if (password !== currentDeletePass) {
       return res.json({ success: false, message: "❌ Incorrect Destruction Override Password!" });
     }
 
-    // ===============================
-    // CHECK IF PURCHASE ENTRIES EXIST
-    // ===============================
     const purchaseCheck = await db.query(
       `SELECT SUM(purchase_pkr) AS total
        FROM purchase_entries
@@ -144,9 +140,6 @@ router.delete("/delete/:ref_no", async (req, res) => {
       });
     }
 
-    // ===============================
-    // CHECK IF PAYMENT RECEIVED
-    // ===============================
     const paymentCheck = await db.query(
       `SELECT SUM(amount) AS total
        FROM customer_payments
@@ -161,9 +154,6 @@ router.delete("/delete/:ref_no", async (req, res) => {
       });
     }
 
-    // ===============================
-    // SOFT DELETE
-    // ===============================
     const q = await db.query(
       `UPDATE visa
        SET is_deleted = true
@@ -184,8 +174,4 @@ router.delete("/delete/:ref_no", async (req, res) => {
   }
 });
 
-
-
 module.exports = router;
-
-

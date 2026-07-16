@@ -3,7 +3,7 @@ const router = express.Router();
 const db = require("../db");
 
 /* =====================================================
-   GET ALL DELETED RECORDS (SALES + PURCHASE + SUPPLIERS)
+   GET ALL DELETED RECORDS (SALES + PURCHASE + SUPPLIERS + CUSTOMERS)
 ===================================================== */
 router.get("/list", async (req, res) => {
   try {
@@ -81,6 +81,17 @@ router.get("/list", async (req, res) => {
       FROM suppliers
       WHERE is_deleted = true
 
+      /* CUSTOMERS */
+      UNION ALL
+      SELECT
+        'CUSTOMER' AS type,
+        customer_code AS ref_no,
+        name AS customer_name,
+        NULL::date AS booking_date,
+        NULL::numeric AS amount
+      FROM customers
+      WHERE is_deleted = true
+
       ORDER BY booking_date DESC NULLS LAST
     `);
 
@@ -117,6 +128,8 @@ router.post("/restore", async (req, res) => {
     }
 
     let table = "";
+    let lookupColumn = "ref_no";
+
     if (type === "PACKAGE") table = "bookings";
     else if (type === "HOTEL") table = "hotels";
     else if (type === "TICKETING") table = "ticketing";
@@ -126,16 +139,23 @@ router.post("/restore", async (req, res) => {
     else if (type === "TRANSPORT") table = "transport";
     else if (type === "ZIYARAT") table = "ziyarat";
     else if (type === "PURCHASE") table = "purchase_entries";
-    else if (type === "SUPPLIER") table = "suppliers";
-    else return res.json({ success: false, error: "Invalid type" });
+    else if (type === "SUPPLIER") {
+      table = "suppliers";
+      lookupColumn = "supplier_code";
+    } else if (type === "CUSTOMER") {
+      table = "customers";
+      lookupColumn = "customer_code";
+    } else {
+      return res.json({ success: false, error: "Invalid type" });
+    }
 
     const q = await db.query(
       `
       UPDATE ${table}
       SET is_deleted = false
-      WHERE ${type === "SUPPLIER" ? "supplier_code" : "ref_no"} = $1
+      WHERE ${lookupColumn} = $1
         AND is_deleted = true
-      RETURNING ${type === "SUPPLIER" ? "supplier_code" : "ref_no"} AS ref_no
+      RETURNING ${lookupColumn} AS ref_no
       `,
       [ref_no]
     );
@@ -176,6 +196,8 @@ router.post("/permanent-delete", async (req, res) => {
     }
 
     let table = "";
+    let lookupColumn = "ref_no";
+
     if (type === "PACKAGE") table = "bookings";
     else if (type === "HOTEL") table = "hotels";
     else if (type === "TICKETING") table = "ticketing";
@@ -185,15 +207,22 @@ router.post("/permanent-delete", async (req, res) => {
     else if (type === "TRANSPORT") table = "transport";
     else if (type === "ZIYARAT") table = "ziyarat";
     else if (type === "PURCHASE") table = "purchase_entries";
-    else if (type === "SUPPLIER") table = "suppliers";
-    else return res.json({ success: false, error: "Invalid type" });
+    else if (type === "SUPPLIER") {
+      table = "suppliers";
+      lookupColumn = "supplier_code";
+    } else if (type === "CUSTOMER") {
+      table = "customers";
+      lookupColumn = "customer_code";
+    } else {
+      return res.json({ success: false, error: "Invalid type" });
+    }
 
     const q = await db.query(
       `
       DELETE FROM ${table}
-      WHERE ${type === "SUPPLIER" ? "supplier_code" : "ref_no"} = $1
+      WHERE ${lookupColumn} = $1
         AND is_deleted = true
-      RETURNING ${type === "SUPPLIER" ? "supplier_code" : "ref_no"} AS ref_no
+      RETURNING ${lookupColumn} AS ref_no
       `,
       [ref_no]
     );

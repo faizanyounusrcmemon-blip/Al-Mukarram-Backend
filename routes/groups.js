@@ -11,17 +11,18 @@ async function generateRefNo() {
 }
 
 // ============================================
-// SAVE / UPDATE GROUPS (UPDATED WITH DATES)
+// SAVE / UPDATE GROUPS (UPDATED WITH CUSTOMER_CODE & DATES)
 // ============================================
 router.post("/save", async (req, res) => {
   try {
     const {
       ref_no,
+      customer_code, // ⚡ Naya customer_code accept kiya
       customer_name,
       booking_date,
-      start_date,    // 🔹 Added
-      end_date,      // 🔹 Added
-      duration,      // 🔹 Added
+      start_date,    
+      end_date,      
+      duration,      
       rows,
       pkr_rate,
     } = req.body;
@@ -34,20 +35,21 @@ router.post("/save", async (req, res) => {
     let finalRef = ref_no;
 
     if (!finalRef) {
-      // 🔹 NEW INSERT WITH DATES
+      // 🔹 NEW INSERT WITH DATES & CUSTOMER CODE
       finalRef = await generateRefNo();
 
       await db.query(
         `INSERT INTO groups
-         (ref_no, customer_name, booking_date, start_date, end_date, duration, rows, persons, total_sar, pkr_rate, total_pkr)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+         (ref_no, customer_code, customer_name, booking_date, start_date, end_date, duration, rows, persons, total_sar, pkr_rate, total_pkr)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
         [
           finalRef,
+          customer_code || null, // ⚡ Walk-in customer ke liye null save hoga
           customer_name,
           booking_date,
-          start_date,  // $4
-          end_date,    // $5
-          duration,    // $6
+          start_date,  
+          end_date,    
+          duration,    
           JSON.stringify(rows || []),
           totalPersons,
           totalSAR,
@@ -56,21 +58,23 @@ router.post("/save", async (req, res) => {
         ]
       );
     } else {
-      // 🔹 UPDATE EXISTING WITH DATES
+      // 🔹 UPDATE EXISTING WITH DATES & CUSTOMER CODE
       await db.query(
         `UPDATE groups SET
-           customer_name=$1,
-           booking_date=$2,
-           start_date=$3,
-           end_date=$4,
-           duration=$5,
-           rows=$6,
-           persons=$7,
-           total_sar=$8,
-           pkr_rate=$9,
-           total_pkr=$10
-         WHERE ref_no=$11`,
+           customer_code=$1,
+           customer_name=$2,
+           booking_date=$3,
+           start_date=$4,
+           end_date=$5,
+           duration=$6,
+           rows=$7,
+           persons=$8,
+           total_sar=$9,
+           pkr_rate=$10,
+           total_pkr=$11
+         WHERE ref_no=$12`,
         [
+          customer_code || null, // ⚡ Update dynamic values
           customer_name,
           booking_date,
           start_date,
@@ -114,16 +118,12 @@ router.get("/get/:ref", async (req, res) => {
 router.delete("/delete/:ref_no", async (req, res) => {
   try {
     const { ref_no } = req.params;
-    // 1. Frontend se password receive karna (req.body se)
     const { password } = req.body; 
 
     if (!password) {
       return res.json({ success: false, message: "❌ Delete password is required!" });
     }
 
-    // ===============================================
-    // 🔍 LIVE PASSWORD LOOKUP FROM system_passwords TABLE
-    // ===============================================
     const passCheck = await db.query(
       "SELECT password_val FROM public.system_passwords WHERE key_name = 'delete_pass'"
     );
@@ -134,14 +134,10 @@ router.delete("/delete/:ref_no", async (req, res) => {
 
     const currentDeletePass = passCheck.rows[0].password_val;
 
-    // Validate if password matches
     if (password !== currentDeletePass) {
       return res.json({ success: false, message: "❌ Incorrect Destruction Override Password!" });
     }
 
-    // ===============================
-    // CHECK IF PURCHASE ENTRIES EXIST
-    // ===============================
     const purchaseCheck = await db.query(
       `SELECT SUM(purchase_pkr) AS total
        FROM purchase_entries
@@ -156,9 +152,6 @@ router.delete("/delete/:ref_no", async (req, res) => {
       });
     }
 
-    // ===============================
-    // CHECK IF PAYMENT RECEIVED
-    // ===============================
     const paymentCheck = await db.query(
       `SELECT SUM(amount) AS total
        FROM customer_payments
@@ -173,9 +166,6 @@ router.delete("/delete/:ref_no", async (req, res) => {
       });
     }
 
-    // ===============================
-    // SOFT DELETE
-    // ===============================
     const q = await db.query(
       `UPDATE groups
        SET is_deleted = true
@@ -195,6 +185,5 @@ router.delete("/delete/:ref_no", async (req, res) => {
     res.json({ success: false, error: err.message });
   }
 });
-
 
 module.exports = router;

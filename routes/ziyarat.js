@@ -15,6 +15,7 @@ router.post("/save", async (req, res) => {
   try {
     const {
       ref_no,
+      customer_code, // ⚡ Naya customer_code field accept kiya
       customer_name,
       booking_date,
       rows,
@@ -31,11 +32,12 @@ router.post("/save", async (req, res) => {
       await db.query(
         `
         INSERT INTO ziyarat
-        (ref_no, customer_name, booking_date, rows, total_sar, pkr_rate, total_pkr)
-        VALUES ($1,$2,$3,$4,$5,$6,$7)
+        (ref_no, customer_code, customer_name, booking_date, rows, total_sar, pkr_rate, total_pkr)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
         `,
         [
           finalRef,
+          customer_code || null, // ⚡ Database me save kiya (Walk-in ke liye null)
           customer_name,
           booking_date,
           JSON.stringify(rows || []),
@@ -48,15 +50,17 @@ router.post("/save", async (req, res) => {
       await db.query(
         `
         UPDATE ziyarat SET
-          customer_name=$1,
-          booking_date=$2,
-          rows=$3,
-          total_sar=$4,
-          pkr_rate=$5,
-          total_pkr=$6
-        WHERE ref_no=$7
+          customer_code=$1,
+          customer_name=$2,
+          booking_date=$3,
+          rows=$4,
+          total_sar=$5,
+          pkr_rate=$6,
+          total_pkr=$7
+        WHERE ref_no=$8
         `,
         [
+          customer_code || null, // ⚡ Update query me bhi handle kiya
           customer_name,
           booking_date,
           JSON.stringify(rows || []),
@@ -96,16 +100,12 @@ router.get("/get/:ref", async (req, res) => {
 router.delete("/delete/:ref_no", async (req, res) => {
   try {
     const { ref_no } = req.params;
-    // 🌟 Frontend se bheja gaya password req.body se nikala
     const { password } = req.body;
 
     if (!password) {
       return res.json({ success: false, message: "❌ Delete password is required!" });
     }
 
-    // ===============================================
-    // 🔍 LIVE PASSWORD LOOKUP FROM system_passwords TABLE
-    // ===============================================
     const passCheck = await db.query(
       "SELECT password_val FROM public.system_passwords WHERE key_name = 'delete_pass'"
     );
@@ -116,14 +116,10 @@ router.delete("/delete/:ref_no", async (req, res) => {
 
     const currentDeletePass = passCheck.rows[0].password_val;
 
-    // Validate if entered password matches the database value
     if (password !== currentDeletePass) {
       return res.json({ success: false, message: "❌ Incorrect Delete Password! Access Denied 😎" });
     }
 
-    // ===============================
-    // CHECK IF PURCHASE ENTRIES EXIST
-    // ===============================
     const purchaseCheck = await db.query(
       `SELECT SUM(purchase_pkr) AS total
        FROM purchase_entries
@@ -138,9 +134,6 @@ router.delete("/delete/:ref_no", async (req, res) => {
       });
     }
 
-    // ===============================
-    // CHECK IF PAYMENT RECEIVED
-    // ===============================
     const paymentCheck = await db.query(
       `SELECT SUM(amount) AS total
        FROM customer_payments
@@ -155,9 +148,6 @@ router.delete("/delete/:ref_no", async (req, res) => {
       });
     }
 
-    // ===============================
-    // SOFT DELETE
-    // ===============================
     const q = await db.query(
       `UPDATE ziyarat
        SET is_deleted = true

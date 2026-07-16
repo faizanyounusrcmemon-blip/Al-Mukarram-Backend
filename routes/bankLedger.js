@@ -22,7 +22,6 @@ router.get("/", async (req, res) => {
 
     if (snapshotRes.rows.length > 0) {
       const rawDate = snapshotRes.rows[0].date_to;
-      // Convert to proper YYYY-MM-DD format without timezone interference
       snapshotDateTo = new Date(rawDate).toLocaleDateString('en-CA'); // Outputs 'YYYY-MM-DD'
       hasSnapshot = true;
     }
@@ -44,7 +43,6 @@ router.get("/", async (req, res) => {
             THEN ROUND(ABS(opening_bank)::numeric,0)
           END AS debit,
 
-          -- Opening ko sabsay oopar rakhnay ke liye order logic
           0 AS order_priority,
           'opening' AS source
         FROM archive_snapshots
@@ -60,28 +58,51 @@ router.get("/", async (req, res) => {
 
         UNION ALL
 
-        /* ================= CUSTOMER BANK (OPTIMIZED JOIN) ================= */
+        /* ================= CUSTOMER BANK (DYNAMIC LOOKUP FOR REG & WALK-IN) ================= */
         SELECT
           cp.id,
           cp.payment_date::date AS txn_date,
           'Customer Payment - ' || COALESCE(
-             (SELECT customer_name FROM bookings WHERE ref_no = cp.ref_no AND booking_date::date > $1::date
-              UNION ALL
-              SELECT customer_name FROM hotels WHERE ref_no = cp.ref_no AND booking_date::date > $1::date
-              UNION ALL
-              SELECT customer_name FROM visa WHERE ref_no = cp.ref_no AND booking_date::date > $1::date
-              UNION ALL
-              SELECT customer_name FROM card WHERE ref_no = cp.ref_no AND booking_date::date > $1::date
-              UNION ALL
-              SELECT customer_name FROM groups WHERE ref_no = cp.ref_no AND booking_date::date > $1::date
-              UNION ALL
-              SELECT customer_name FROM ticketing WHERE ref_no = cp.ref_no AND booking_date::date > $1::date
-              UNION ALL
-              SELECT customer_name FROM transport WHERE ref_no = cp.ref_no AND booking_date::date > $1::date
-              UNION ALL
-              SELECT customer_name FROM ziyarat WHERE ref_no = cp.ref_no AND booking_date::date > $1::date
-              LIMIT 1
-             ), 'Walk-in Customer'
+             -- Pehle check karega agar ref_no ek Registered Customer Code hai (CUST- se start hota hai)
+             CASE 
+               WHEN cp.ref_no LIKE 'CUST-%' THEN
+                 (SELECT customer_name FROM (
+                    SELECT customer_name FROM bookings WHERE customer_code = cp.ref_no AND booking_date::date > $1::date AND customer_name IS NOT NULL AND customer_name != ''
+                    UNION ALL
+                    SELECT customer_name FROM hotels WHERE customer_code = cp.ref_no AND booking_date::date > $1::date AND customer_name IS NOT NULL AND customer_name != ''
+                    UNION ALL
+                    SELECT customer_name FROM visa WHERE customer_code = cp.ref_no AND booking_date::date > $1::date AND customer_name IS NOT NULL AND customer_name != ''
+                    UNION ALL
+                    SELECT customer_name FROM card WHERE customer_code = cp.ref_no AND booking_date::date > $1::date AND customer_name IS NOT NULL AND customer_name != ''
+                    UNION ALL
+                    SELECT customer_name FROM groups WHERE customer_code = cp.ref_no AND booking_date::date > $1::date AND customer_name IS NOT NULL AND customer_name != ''
+                    UNION ALL
+                    SELECT customer_name FROM ticketing WHERE customer_code = cp.ref_no AND booking_date::date > $1::date AND customer_name IS NOT NULL AND customer_name != ''
+                    UNION ALL
+                    SELECT customer_name FROM transport WHERE customer_code = cp.ref_no AND booking_date::date > $1::date AND customer_name IS NOT NULL AND customer_name != ''
+                    UNION ALL
+                    SELECT customer_name FROM ziyarat WHERE customer_code = cp.ref_no AND booking_date::date > $1::date AND customer_name IS NOT NULL AND customer_name != ''
+                  ) reg_cust LIMIT 1)
+               ELSE
+                 -- Agar CUST- se start nahi hota to purana Walk-in Customer ref_no normal lookup chalega
+                 (SELECT customer_name FROM (
+                    SELECT customer_name FROM bookings WHERE ref_no = cp.ref_no AND booking_date::date > $1::date AND customer_name IS NOT NULL AND customer_name != ''
+                    UNION ALL
+                    SELECT customer_name FROM hotels WHERE ref_no = cp.ref_no AND booking_date::date > $1::date AND customer_name IS NOT NULL AND customer_name != ''
+                    UNION ALL
+                    SELECT customer_name FROM visa WHERE ref_no = cp.ref_no AND booking_date::date > $1::date AND customer_name IS NOT NULL AND customer_name != ''
+                    UNION ALL
+                    SELECT customer_name FROM card WHERE ref_no = cp.ref_no AND booking_date::date > $1::date AND customer_name IS NOT NULL AND customer_name != ''
+                    UNION ALL
+                    SELECT customer_name FROM groups WHERE ref_no = cp.ref_no AND booking_date::date > $1::date AND customer_name IS NOT NULL AND customer_name != ''
+                    UNION ALL
+                    SELECT customer_name FROM ticketing WHERE ref_no = cp.ref_no AND booking_date::date > $1::date AND customer_name IS NOT NULL AND customer_name != ''
+                    UNION ALL
+                    SELECT customer_name FROM transport WHERE ref_no = cp.ref_no AND booking_date::date > $1::date AND customer_name IS NOT NULL AND customer_name != ''
+                    UNION ALL
+                    SELECT customer_name FROM ziyarat WHERE ref_no = cp.ref_no AND booking_date::date > $1::date AND customer_name IS NOT NULL AND customer_name != ''
+                  ) walkin_cust LIMIT 1)
+             END, 'Walk-in Customer'
           ) || ' (Ref: ' || cp.ref_no || ')' AS description,
           ROUND(cp.amount::numeric,0) AS credit,
           NULL::numeric AS debit,
@@ -91,7 +112,7 @@ router.get("/", async (req, res) => {
         WHERE LOWER(COALESCE(cp.type,'')) != 'adjustment'
           AND LOWER(COALESCE(cp.payment_method,''))='bank'
           AND cp.is_deleted = false
-          AND cp.payment_date::date > $1::date -- Strict filter for date only
+          AND cp.payment_date::date > $1::date
 
         UNION ALL
 

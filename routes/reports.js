@@ -25,64 +25,116 @@ const CUSTOMER_SQL = `
 
 
 /* =====================================================
-   ✅ SALE ADJUSTMENT REPORT (FINAL FIX)
+   ✅ SALE ADJUSTMENT REPORT (DYNAMIC REG & WALK-IN FIX)
 ===================================================== */
 router.get("/sale-adjustments", async (req, res) => {
   try {
     const sql = `
       WITH sales AS (
-        SELECT ref_no, total_pkr FROM bookings WHERE is_deleted=false
+        SELECT ref_no, customer_code, total_pkr FROM bookings WHERE is_deleted=false
         UNION ALL
-        SELECT ref_no, total_pkr FROM hotels WHERE is_deleted=false
+        SELECT ref_no, customer_code, total_pkr FROM hotels WHERE is_deleted=false
         UNION ALL
-        SELECT ref_no, total_pkr FROM visa WHERE is_deleted=false
+        SELECT ref_no, customer_code, total_pkr FROM visa WHERE is_deleted=false
         UNION ALL
-        SELECT ref_no, total_pkr FROM card WHERE is_deleted=false
+        SELECT ref_no, customer_code, total_pkr FROM card WHERE is_deleted=false
         UNION ALL
-        SELECT ref_no, total_pkr FROM groups WHERE is_deleted=false
+        SELECT ref_no, customer_code, total_pkr FROM groups WHERE is_deleted=false
         UNION ALL
-        SELECT ref_no, total_pkr FROM ticketing WHERE is_deleted=false
+        SELECT ref_no, customer_code, total_pkr FROM ticketing WHERE is_deleted=false
         UNION ALL
-        SELECT ref_no, total_pkr FROM transport WHERE is_deleted=false
+        SELECT ref_no, customer_code, total_pkr FROM transport WHERE is_deleted=false
         UNION ALL
-        SELECT ref_no, total_pkr FROM ziyarat WHERE is_deleted=false
+        SELECT ref_no, customer_code, total_pkr FROM ziyarat WHERE is_deleted=false
       ),
-      sale_sum AS (
+      
+      -- Walk-in customers ki sale lookup by ref_no
+      sale_sum_walkin AS (
         SELECT ref_no, SUM(total_pkr) AS amount
         FROM sales
         GROUP BY ref_no
+      ),
+
+      -- Registered customers ki sale lookup by customer_code
+      sale_sum_registered AS (
+        SELECT customer_code, SUM(total_pkr) AS amount
+        FROM sales
+        WHERE customer_code IS NOT NULL AND customer_code != ''
+        GROUP BY customer_code
       )
+
       SELECT
         cp.id,
         cp.payment_date AS date,
         cp.ref_no,
-        c.customer_name,
         cp.payment_method,
-        COALESCE(ss.amount, 0)        AS amount,
-        COALESCE(cp.amount, 0)        AS adjustment_amount,
-        COALESCE(ss.amount, 0) - COALESCE(cp.amount, 0) AS net_amount
+        
+        -- DYNAMIC NAME LOOKUP
+        COALESCE(
+          CASE 
+            WHEN cp.ref_no LIKE 'CUST-%' THEN
+              (SELECT customer_name FROM (
+                 SELECT customer_name FROM bookings WHERE customer_code = cp.ref_no AND customer_name IS NOT NULL AND customer_name != ''
+                 UNION ALL
+                 SELECT customer_name FROM hotels WHERE customer_code = cp.ref_no AND customer_name IS NOT NULL AND customer_name != ''
+                 UNION ALL
+                 SELECT customer_name FROM visa WHERE customer_code = cp.ref_no AND customer_name IS NOT NULL AND customer_name != ''
+                 UNION ALL
+                 SELECT customer_name FROM card WHERE customer_code = cp.ref_no AND customer_name IS NOT NULL AND customer_name != ''
+                 UNION ALL
+                 SELECT customer_name FROM groups WHERE customer_code = cp.ref_no AND customer_name IS NOT NULL AND customer_name != ''
+                 UNION ALL
+                 SELECT customer_name FROM ticketing WHERE customer_code = cp.ref_no AND customer_name IS NOT NULL AND customer_name != ''
+                 UNION ALL
+                 SELECT customer_name FROM transport WHERE customer_code = cp.ref_no AND customer_name IS NOT NULL AND customer_name != ''
+                 UNION ALL
+                 SELECT customer_name FROM ziyarat WHERE customer_code = cp.ref_no AND customer_name IS NOT NULL AND customer_name != ''
+               ) reg_cust LIMIT 1)
+            ELSE
+              (SELECT customer_name FROM (
+                 SELECT customer_name FROM bookings WHERE ref_no = cp.ref_no AND customer_name IS NOT NULL AND customer_name != ''
+                 UNION ALL
+                 SELECT customer_name FROM hotels WHERE ref_no = cp.ref_no AND customer_name IS NOT NULL AND customer_name != ''
+                 UNION ALL
+                 SELECT customer_name FROM visa WHERE ref_no = cp.ref_no AND customer_name IS NOT NULL AND customer_name != ''
+                 UNION ALL
+                 SELECT customer_name FROM card WHERE ref_no = cp.ref_no AND customer_name IS NOT NULL AND customer_name != ''
+                 UNION ALL
+                 SELECT customer_name FROM groups WHERE ref_no = cp.ref_no AND customer_name IS NOT NULL AND customer_name != ''
+                 UNION ALL
+                 SELECT customer_name FROM ticketing WHERE ref_no = cp.ref_no AND customer_name IS NOT NULL AND customer_name != ''
+                 UNION ALL
+                 SELECT customer_name FROM transport WHERE ref_no = cp.ref_no AND customer_name IS NOT NULL AND customer_name != ''
+                 UNION ALL
+                 SELECT customer_name FROM ziyarat WHERE ref_no = cp.ref_no AND customer_name IS NOT NULL AND customer_name != ''
+               ) walkin_cust LIMIT 1)
+          END, 'Unknown Customer'
+        ) AS customer_name,
+
+        -- DYNAMIC TOTAL SALE AMOUNT LOOKUP
+        ROUND(COALESCE(
+          CASE 
+            WHEN cp.ref_no LIKE 'CUST-%' THEN ss_reg.amount
+            ELSE ss_walk.amount
+          END, 0)::numeric, 0) AS amount,
+
+        ROUND(COALESCE(cp.amount, 0)::numeric, 0) AS adjustment_amount,
+
+        ROUND((COALESCE(
+          CASE 
+            WHEN cp.ref_no LIKE 'CUST-%' THEN ss_reg.amount
+            ELSE ss_walk.amount
+          END, 0) - COALESCE(cp.amount, 0))::numeric, 0) AS net_amount
+
       FROM customer_payments cp
 
-      LEFT JOIN sale_sum ss
-        ON ss.ref_no = cp.ref_no
+      -- Left join with Walk-in Sales
+      LEFT JOIN sale_sum_walkin ss_walk
+        ON ss_walk.ref_no = cp.ref_no
 
-      LEFT JOIN (
-        SELECT ref_no, customer_name FROM bookings
-        UNION ALL
-        SELECT ref_no, customer_name FROM hotels
-        UNION ALL
-        SELECT ref_no, customer_name FROM visa
-        UNION ALL
-        SELECT ref_no, customer_name FROM card
-        UNION ALL
-        SELECT ref_no, customer_name FROM groups
-        UNION ALL
-        SELECT ref_no, customer_name FROM ticketing
-        UNION ALL
-        SELECT ref_no, customer_name FROM transport
-        UNION ALL
-        SELECT ref_no, customer_name FROM ziyarat
-      ) c ON c.ref_no = cp.ref_no
+      -- Left join with Registered Sales
+      LEFT JOIN sale_sum_registered ss_reg
+        ON ss_reg.customer_code = cp.ref_no
 
       WHERE cp.type = 'adjustment'
       ORDER BY cp.payment_date DESC, cp.id DESC

@@ -37,6 +37,7 @@ const TABLES = [
   "card",
   "groups",
   "transport",
+  "customers",
   "purchase_entries",
   "users",
   "bank_transactions",
@@ -585,6 +586,7 @@ router.post("/fix-sequences", async (req, res) => {
       "card",
       "groups",
       "transport",
+      "customers",
       "purchase_entries",
       "users",
       "bank_transactions",
@@ -716,6 +718,25 @@ router.post("/fix-sequences", async (req, res) => {
         )
       );
     `);
+
+    // CUSTOMER CODE SEQUENCE
+    await db.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname='customers_code_seq') THEN
+          CREATE SEQUENCE customers_code_seq;
+        END IF;
+      END $$;
+    `);
+    await db.query(`
+      SELECT setval(
+        'customers_code_seq',
+        COALESCE(
+          (SELECT MAX(CAST(REPLACE(customer_code, 'CUST-', '') AS INTEGER)) FROM customers),
+          0
+        )
+      );
+    `);
+
 
     return res.json({
       success: true,
