@@ -101,6 +101,9 @@ app.use("/api/deleted", require("../routes/deleted"));
 // ==========================
 // LEDGERS
 // ==========================
+app.use("/registered-ledger", require("../routes/registeredLedger"));
+app.use("/api/registered-ledger", require("../routes/registeredLedger"));
+
 app.use("/customer-ledger", require("../routes/customerLedger"));
 app.use("/api/customer-ledger", require("../routes/customerLedger"));
 
