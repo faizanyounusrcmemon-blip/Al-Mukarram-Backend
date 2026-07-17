@@ -233,10 +233,11 @@ router.delete("/delete/:entryId", async (req, res) => {
 });
 
 /* ================================
-   SAVE PAYMENT / ADJUSTMENT
+   SAVE PAYMENT / ADJUSTMENT / OPENING BALANCE
 ================================ */
 router.post("/payment", async (req, res) => {
   try {
+    // 1. 'type' parameter ko handle krna hai
     const { supplier_code, payment_date, payment_method, amount, type } = req.body;
 
     const supplier = await db.query(
@@ -256,7 +257,7 @@ router.post("/payment", async (req, res) => {
       payment_date,
       payment_method,
       amount,
-      type
+      type // 'opening_balance' context handle ho jayega
     ]);
 
     res.json({ success: true });
@@ -266,8 +267,7 @@ router.post("/payment", async (req, res) => {
 });
 
 /* ================================
-   GET LEDGER BY SUPPLIER CODE
-   (KEEP THIS LAST)
+   GET LEDGER BY SUPPLIER CODE (UPDATED)
 ================================ */
 router.get("/:supplierCode", async (req, res) => {
   try {
@@ -282,167 +282,100 @@ router.get("/:supplierCode", async (req, res) => {
       return res.json({ success: false, error: "Supplier not found" });
 
     const supplierId = supplier.rows[0].id;
+    let openingBalance = 0;
+    let snapshotDate = null;
 
-let openingBalance = 0;
-let snapshotDate = null;
+    const snapshot = await db.query(`
+      SELECT id,date_to FROM archive_snapshots ORDER BY id DESC LIMIT 1
+    `);
 
-const snapshot = await db.query(`
-  SELECT id,date_to
-  FROM archive_snapshots
-  ORDER BY id DESC
-  LIMIT 1
-`);
-
-if(snapshot.rows.length){
-
-  snapshotDate =
-    snapshot.rows[0].date_to;
-
-  const bal = await db.query(`
-    SELECT balance
-    FROM archive_balances
-    WHERE snapshot_id=$1
-    AND balance_type='SUPPLIER'
-    AND code=$2
-  `,[
-    snapshot.rows[0].id,
-    supplierCode
-  ]);
-
-  openingBalance =
-    Number(bal.rows[0]?.balance || 0);
-}
+    if(snapshot.rows.length){
+      snapshotDate = snapshot.rows[0].date_to;
+      const bal = await db.query(`
+        SELECT balance FROM archive_balances WHERE snapshot_id=$1 AND balance_type='SUPPLIER' AND code=$2
+      `,[snapshot.rows[0].id, supplierCode]);
+      openingBalance = Number(bal.rows[0]?.balance || 0);
+    }
 
     const purchases = await db.query(`
       SELECT 
-        pe.id,
-        pe.created_at::date AS date,
-        'Purchase' AS type,
-        s.supplier_name,
-        '-' AS payment_method,
-        pe.purchase_pkr AS debit,
-        0 AS credit,
-        pe.item,
-        pe.ref_no
+        pe.id, pe.created_at::date AS date, 'Purchase' AS type, s.supplier_name,
+        '-' AS payment_method, pe.purchase_pkr AS debit, 0 AS credit, pe.item, pe.ref_no
       FROM purchase_entries pe
       JOIN suppliers s ON s.supplier_code = pe.supplier_code
-WHERE pe.supplier_code=$1
-AND pe.is_deleted=false
-AND (
-  $2::date IS NULL
-  OR pe.created_at::date > $2
-)
-    `, [
- supplierCode,
- snapshotDate
-]);
+      WHERE pe.supplier_code=$1 AND pe.is_deleted=false
+      AND ($2::date IS NULL OR pe.created_at::date > $2)
+    `, [supplierCode, snapshotDate]);
 
+    // Payments aur opening balance data
     const payments = await db.query(`
       SELECT
         id,
         payment_date::date AS date,
         type,
         payment_method,
-        0 AS debit,
-        amount AS credit
+        CASE WHEN type = 'opening_balance' THEN amount ELSE 0 END AS debit,
+        CASE WHEN type != 'opening_balance' THEN amount ELSE 0 END AS credit
       FROM supplier_payments
       WHERE supplier_id=$1
-AND (
-  $2::date IS NULL
-  OR payment_date > $2
-)
-    `, [
- supplierId,
- snapshotDate
-]);
+      AND ($2::date IS NULL OR payment_date > $2)
+    `, [supplierId, snapshotDate]);
 
-const ledgerAll = [];
+    const ledgerAll = [];
 
-if(openingBalance !== 0){
+    if(openingBalance !== 0){
+      ledgerAll.push({
+        id: 0, date: snapshotDate, type: "Snapshot Opening",
+        debit: openingBalance > 0 ? openingBalance : 0,
+        credit: openingBalance < 0 ? Math.abs(openingBalance) : 0,
+        entry_type: "snapshot"
+      });
+    }
 
-  ledgerAll.push({
-    id:0,
-    date:snapshotDate,
-    type:"Snapshot Opening",
+    // Dono arrays ko combine karna
+    ledgerAll.push(...purchases.rows, ...payments.rows);
 
-    debit:
-      openingBalance > 0 
-      ? openingBalance 
-      : 0,
+    // Date aur ID ke mutabiq sort karna
+    ledgerAll.sort((a,b)=>{
+      const d = new Date(a.date) - new Date(b.date);
+      if(d !== 0) return d;
+      return Number(a.id) - Number(b.id);
+    });
 
-    credit:
-      openingBalance < 0
-      ? Math.abs(openingBalance)
-      : 0,
+    let balance = 0;
+    const finalLedger = ledgerAll.map(r => {
+      balance += Number(r.debit || 0) - Number(r.credit || 0);
 
-    entry_type:"snapshot"
-  });
+      // ✨ SYSTEM FIX HERE: Agre type opening_balance ho to custom labeling set karein
+      let displayType = r.type;
+      let itemDescription = r.item || `${r.type} (${r.payment_method || ""})`;
 
-}
+      if (r.type === 'opening_balance') {
+        displayType = 'Opening Bal'; // Red Badge me 'Opening Bal' dikhane ke liye
+        itemDescription = 'opening_balance'; // Item detail table me custom name ke liye
+      }
 
-ledgerAll.push(
-  ...purchases.rows,
-  ...payments.rows
-);
+      return {
+        ...r,
+        type: displayType, // Badge value set ho gayi
+        description: itemDescription,
+        balance,
+        // ✨ DELETE BUTTON FIX: type 'opening_balance' ko 'payment' treat karein taake delete active ho jaye
+        entry_type: (r.type === 'opening_balance' || r.type === 'Opening Bal') ? "payment" : 
+                    (String(r.type || "").toLowerCase().includes("payment") || String(r.type || "").toLowerCase().includes("adjustment") ? "payment" : (r.type === "Snapshot Opening" ? "snapshot" : "purchase"))
+      };
+    });
 
-ledgerAll.sort((a,b)=>{
+    return res.json({
+      success: true,
+      ledger: finalLedger,
+      snapshotDate,
+      openingBalance
+    });
 
- const d =
- new Date(a.date)-new Date(b.date);
-
- if(d!==0) return d;
-
- return Number(a.id)-Number(b.id);
-
-});
-
-let balance = 0;
-
-const finalLedger = ledgerAll.map(r => {
-
-  balance +=
-    Number(r.debit || 0) -
-    Number(r.credit || 0);
-
-  return {
-    ...r,
-    balance,
-
-    entry_type:
-      String(r.type || "")
-      .toLowerCase()
-      .includes("payment") ||
-
-      String(r.type || "")
-      .toLowerCase()
-      .includes("adjustment")
-
-        ? "payment"
-
-        : r.type === "Snapshot Opening"
-
-        ? "snapshot"
-
-        : "purchase"
-  };
-
-});
-
-return res.json({
-  success: true,
-  ledger: finalLedger,
-  snapshotDate,
-  openingBalance
-});
-
-} catch (e) {
-
-  res.status(500).json({
-    success:false,
-    error:e.message
-  });
-
-}
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
 });
 
 module.exports = router;
