@@ -3,9 +3,11 @@ const router = express.Router();
 const db = require("../db");
 
 /* =====================================================
-   HELPERS: CUSTOMER TOTAL SALES & PAYMENTS (USING ref_no FOR CUSTOMER CODE)
+   HELPERS: CUSTOMER TOTAL SALES (DEBIT VALUES)
+   Strictly using customer_code[cite: 22]
 ===================================================== */
 async function getRegCustomerSale(customer_code) {
+  // 1. Get all standard sales
   const sale = await db.query(
     `
     SELECT COALESCE(SUM(amount), 0) AS total_sale
@@ -29,19 +31,30 @@ async function getRegCustomerSale(customer_code) {
     `,
     [customer_code]
   );
-  return Number(sale.rows[0]?.total_sale || 0);
+
+  // 2. Add Opening Balances (which act as Debits) from customer_payments table
+  const openingBal = await db.query(
+    `
+    SELECT COALESCE(SUM(amount), 0) AS op_bal 
+    FROM customer_payments 
+    WHERE ref_no=$1 AND type='opening_balance'
+    `,
+    [customer_code]
+  );
+
+  return Number(sale.rows[0]?.total_sale || 0) + Number(openingBal.rows[0]?.op_bal || 0);
 }
 
 /* =====================================================
-   HELPERS: CUSTOMER TOTAL SALES & PAYMENTS (INCLUDING ADJUSTMENTS)
+   HELPERS: CUSTOMER TOTAL PAYMENTS (CREDIT VALUES ONLY)
+   Excluding 'opening_balance' since it is treated as a Debit[cite: 22]
 ===================================================== */
 async function getRegCustomerPayments(customer_code) {
   const paid = await db.query(
     `
     SELECT COALESCE(SUM(amount), 0) AS paid
     FROM customer_payments
-    WHERE ref_no=$1
-    -- Yahan se humne check hata diya hai taake 'payment' aur 'adjustment' dono count hon
+    WHERE ref_no=$1 AND type != 'opening_balance'
     `,
     [customer_code]
   );
@@ -49,7 +62,7 @@ async function getRegCustomerPayments(customer_code) {
 }
 
 /* =====================================================
-   1. REGISTERED LEDGER DETAIL (LOOKUP BY ref_no)
+   1. REGISTERED LEDGER DETAIL (LOOKUP BY STRICT CUSTOMER_CODE ONLY)
 ===================================================== */
 router.get("/detail/:customer_code", async (req, res) => {
   try {
@@ -59,7 +72,7 @@ router.get("/detail/:customer_code", async (req, res) => {
     let balance = 0;
     let customerName = "Registered Customer";
 
-    // Dynamic customer name lookup
+    // Dynamic customer name lookup using the REAL customer_code
     const nameRes = await db.query(
       `
       SELECT customer_name FROM (
@@ -87,7 +100,7 @@ router.get("/detail/:customer_code", async (req, res) => {
       customerName = nameRes.rows[0].customer_name;
     }
 
-    // Load Sales
+    // Load Sales using customer_code
     const salesRes = await db.query(
       `
       SELECT ref_no, booking_date, total_pkr, 'Booking' AS src FROM bookings WHERE customer_code=$1 AND is_deleted=false
@@ -109,7 +122,7 @@ router.get("/detail/:customer_code", async (req, res) => {
       [customer_code]
     );
 
-    // Load Payments (Filtering with ref_no instead of customer_code)
+    // Load Payments (Mapped with ref_no which is our stored customer_code)
     const paymentsRes = await db.query(
       `
       SELECT id, payment_date, amount, type, payment_method 
@@ -121,36 +134,49 @@ router.get("/detail/:customer_code", async (req, res) => {
 
     let allEntries = [];
 
-    // Map Sales
+    // Map Sales: INVOICE IS DEBIT (+)
     salesRes.rows.forEach(s => {
+      const amt = Math.round(Number(s.total_pkr || 0));
       allEntries.push({
         id: `SALE-${s.ref_no}`,
         date: s.booking_date,
         description: `Sale Invoice (${s.src}) - Ref: ${s.ref_no}`,
-        debit: 0,
-        credit: Math.round(Number(s.total_pkr || 0)),
+        debit: amt,
+        credit: 0,
         type: "sale"
       });
     });
 
-    // Map Payments
+    // Map Payments & Opening Balances
     paymentsRes.rows.forEach(p => {
       const amt = Math.round(Number(p.amount || 0));
-      allEntries.push({
-        id: p.id,
-        date: p.payment_date,
-        description: p.type === "adjustment" ? "Adjustment Receipt" : `Payment Received (${p.payment_method || ""})`,
-        debit: amt,
-        credit: 0,
-        type: "payment"
-      });
+      if (p.type === "opening_balance") {
+        allEntries.push({
+          id: p.id,
+          date: p.payment_date,
+          description: `🔑 Opening Balance (Debit Setup)`,
+          debit: amt,
+          credit: 0,
+          type: "opening_balance"
+        });
+      } else {
+        allEntries.push({
+          id: p.id,
+          date: p.payment_date,
+          description: p.type === "adjustment" ? `Adjustment Receipt (${p.payment_method || ""})` : `Payment Received (${p.payment_method || ""})`,
+          debit: 0,
+          credit: amt,
+          type: "payment"
+        });
+      }
     });
 
+    // Sort entries chronologically by date
     allEntries.sort((a, b) => new Date(a.date) - new Date(b.date));
 
     let filteredRows = [];
     allEntries.forEach(entry => {
-      balance = balance + entry.credit - entry.debit;
+      balance = balance + entry.debit - entry.credit;
       
       let matchDate = true;
       if (startDate && new Date(entry.date) < new Date(startDate)) matchDate = false;
@@ -178,56 +204,144 @@ router.get("/detail/:customer_code", async (req, res) => {
 });
 
 /* =====================================================
-   2. GET ALL PENDING CUSTOMERS
+   2. GET ALL PENDING CUSTOMERS (FIXED: NO REFERENCE MIXING)
 ===================================================== */
 router.get("/pending/list", async (req, res) => {
   try {
-    const activeCusts = await db.query(
+    // 1. Pehle hum database se un tamam UNIQUE customer_codes ki list nikalenge jo asal me valid hain (sales tables me hain)
+    const validCustomerCodesRes = await db.query(
       `
-      SELECT DISTINCT customer_code, customer_name
-      FROM (
-        SELECT customer_code, customer_name FROM bookings WHERE customer_code IS NOT NULL AND customer_code != '' AND is_deleted=false
-        UNION ALL
-        SELECT customer_code, customer_name FROM hotels WHERE customer_code IS NOT NULL AND customer_code != '' AND is_deleted=false
-        UNION ALL
-        SELECT customer_code, customer_name FROM visa WHERE customer_code IS NOT NULL AND customer_code != '' AND is_deleted=false
-        UNION ALL
-        SELECT customer_code, customer_name FROM card WHERE customer_code IS NOT NULL AND customer_code != '' AND is_deleted=false
-        UNION ALL
-        SELECT customer_code, customer_name FROM groups WHERE customer_code IS NOT NULL AND customer_code != '' AND is_deleted=false
-        UNION ALL
-        SELECT customer_code, customer_name FROM ticketing WHERE customer_code IS NOT NULL AND customer_code != '' AND is_deleted=false
-        UNION ALL
-        SELECT customer_code, customer_name FROM transport WHERE customer_code IS NOT NULL AND customer_code != '' AND is_deleted=false
-        UNION ALL
-        SELECT customer_code, customer_name FROM ziyarat WHERE customer_code IS NOT NULL AND customer_code != '' AND is_deleted=false
-      ) x
+      SELECT DISTINCT customer_code FROM bookings WHERE customer_code IS NOT NULL AND customer_code != '' AND is_deleted=false
+      UNION
+      SELECT customer_code FROM hotels WHERE customer_code IS NOT NULL AND customer_code != '' AND is_deleted=false
+      UNION
+      SELECT customer_code FROM visa WHERE customer_code IS NOT NULL AND customer_code != '' AND is_deleted=false
+      UNION
+      SELECT customer_code FROM card WHERE customer_code IS NOT NULL AND customer_code != '' AND is_deleted=false
+      UNION
+      SELECT customer_code FROM groups WHERE customer_code IS NOT NULL AND customer_code != '' AND is_deleted=false
+      UNION
+      SELECT customer_code FROM ticketing WHERE customer_code IS NOT NULL AND customer_code != '' AND is_deleted=false
+      UNION
+      SELECT customer_code FROM transport WHERE customer_code IS NOT NULL AND customer_code != '' AND is_deleted=false
+      UNION
+      SELECT customer_code FROM ziyarat WHERE customer_code IS NOT NULL AND customer_code != '' AND is_deleted=false
       `
     );
 
-    let pending = [];
-    for (let row of activeCusts.rows) {
-      const totalSale = await getRegCustomerSale(row.customer_code);
-      const totalPaid = await getRegCustomerPayments(row.customer_code);
+    const validCustomerCodes = validCustomerCodesRes.rows.map(r => r.customer_code);
 
-      if (totalSale > totalPaid) {
-        pending.push({
-          customer_code: row.customer_code,
-          customer_name: row.customer_name || "Registered Customer",
-          remaining_balance: totalSale - totalPaid,
-          payment_status: totalPaid === 0 ? "PENDING" : "PARTIAL"
-        });
-      }
+    if (validCustomerCodes.length === 0) {
+      return res.json({ success: true, rows: [] });
     }
+
+    // 2. Ab hum aggregate query chalayenge lekin strictly validCustomerCodes par filter laga kar!
+    // Is se payment table ke booking references (VISA-XXXXX) automatically discard ho jayenge.
+    const result = await db.query(
+      `
+      WITH all_debits AS (
+        -- Standard module sales (Debits)
+        SELECT customer_code, total_pkr AS amount FROM bookings WHERE customer_code = ANY($1) AND is_deleted=false
+        UNION ALL
+        SELECT customer_code, total_pkr FROM hotels WHERE customer_code = ANY($1) AND is_deleted=false
+        UNION ALL
+        SELECT customer_code, total_pkr FROM visa WHERE customer_code = ANY($1) AND is_deleted=false
+        UNION ALL
+        SELECT customer_code, total_pkr FROM card WHERE customer_code = ANY($1) AND is_deleted=false
+        UNION ALL
+        SELECT customer_code, total_pkr FROM groups WHERE customer_code = ANY($1) AND is_deleted=false
+        UNION ALL
+        SELECT customer_code, total_pkr FROM ticketing WHERE customer_code = ANY($1) AND is_deleted=false
+        UNION ALL
+        SELECT customer_code, total_pkr FROM transport WHERE customer_code = ANY($1) AND is_deleted=false
+        UNION ALL
+        SELECT customer_code, total_pkr FROM ziyarat WHERE customer_code = ANY($1) AND is_deleted=false
+        UNION ALL
+        -- Opening Balance acts as Debit (only for valid customer codes)
+        SELECT ref_no AS customer_code, amount FROM customer_payments WHERE ref_no = ANY($1) AND type='opening_balance'
+      ),
+      
+      all_credits AS (
+        -- Payments and adjustments (Credits) - strictly filtering by valid customer codes
+        SELECT ref_no AS customer_code, amount FROM customer_payments WHERE ref_no = ANY($1) AND type != 'opening_balance'
+      ),
+
+      customer_names AS (
+        -- Get unique customer name mapping for valid customer codes
+        SELECT DISTINCT ON (customer_code) customer_code, customer_name
+        FROM (
+          SELECT customer_code, customer_name FROM bookings WHERE customer_code = ANY($1) AND customer_name IS NOT NULL AND customer_name != '' AND is_deleted=false
+          UNION ALL
+          SELECT customer_code, customer_name FROM hotels WHERE customer_code = ANY($1) AND customer_name IS NOT NULL AND customer_name != '' AND is_deleted=false
+          UNION ALL
+          SELECT customer_code, customer_name FROM visa WHERE customer_code = ANY($1) AND customer_name IS NOT NULL AND customer_name != '' AND is_deleted=false
+          UNION ALL
+          SELECT customer_code, customer_name FROM card WHERE customer_code = ANY($1) AND customer_name IS NOT NULL AND customer_name != '' AND is_deleted=false
+          UNION ALL
+          SELECT customer_code, customer_name FROM groups WHERE customer_code = ANY($1) AND customer_name IS NOT NULL AND customer_name != '' AND is_deleted=false
+          UNION ALL
+          SELECT customer_code, customer_name FROM ticketing WHERE customer_code = ANY($1) AND customer_name IS NOT NULL AND customer_name != '' AND is_deleted=false
+          UNION ALL
+          SELECT customer_code, customer_name FROM transport WHERE customer_code = ANY($1) AND customer_name IS NOT NULL AND customer_name != '' AND is_deleted=false
+          UNION ALL
+          SELECT customer_code, customer_name FROM ziyarat WHERE customer_code = ANY($1) AND customer_name IS NOT NULL AND customer_name != '' AND is_deleted=false
+        ) n
+      ),
+
+      aggregated AS (
+        SELECT 
+          c.customer_code,
+          COALESCE(d.total_debit, 0) AS total_sale,
+          COALESCE(p.total_credit, 0) AS total_paid
+        FROM (
+          SELECT customer_code FROM all_debits
+          UNION
+          SELECT customer_code FROM all_credits
+        ) c
+        LEFT JOIN (SELECT customer_code, SUM(amount) AS total_debit FROM all_debits GROUP BY customer_code) d ON c.customer_code = d.customer_code
+        LEFT JOIN (SELECT customer_code, SUM(amount) AS total_credit FROM all_credits GROUP BY customer_code) p ON c.customer_code = p.customer_code
+      )
+
+      SELECT 
+        a.customer_code,
+        COALESCE(n.customer_name, 'Registered Customer') AS customer_name,
+        (a.total_sale - a.total_paid) AS remaining_balance,
+        a.total_paid
+      FROM aggregated a
+      LEFT JOIN customer_names n ON a.customer_code = n.customer_code
+      WHERE (a.total_sale - a.total_paid) != 0
+      `,
+      [validCustomerCodes]
+    );
+
+    let pending = result.rows.map(row => {
+      const balance = Number(row.remaining_balance);
+      const totalPaid = Number(row.total_paid);
+      let status = "PARTIAL";
+
+      if (balance > 0) {
+        status = totalPaid === 0 ? "PENDING" : "PARTIAL";
+      } else if (balance < 0) {
+        status = "EXTRA PAID";
+      }
+
+      return {
+        customer_code: row.customer_code,
+        customer_name: row.customer_name,
+        remaining_balance: balance,
+        payment_status: status
+      };
+    });
 
     res.json({ success: true, rows: pending });
   } catch (err) {
+    console.error("Error in pending list:", err);
     res.json({ success: false, error: err.message });
   }
 });
 
 /* =====================================================
-   3. SAVE REGISTERED CUSTOMER PAYMENT (SAVING CUSTOMER_CODE IN ref_no)
+   3. SAVE REGISTERED CUSTOMER PAYMENT / OPENING BALANCE
 ===================================================== */
 router.post("/payment", async (req, res) => {
   const client = await db.connect();
@@ -240,7 +354,7 @@ router.post("/payment", async (req, res) => {
 
     await client.query("BEGIN");
     
-    // Yahan hum ref_no ke andar customer_code ko pass kar rahe hain! No new columns!
+    // Saving customer_code securely in the ref_no identifier field
     await client.query(
       `
       INSERT INTO customer_payments (ref_no, amount, payment_method, type, payment_date)
@@ -280,7 +394,7 @@ router.post("/delete/:id", async (req, res) => {
     }
 
     await db.query("DELETE FROM customer_payments WHERE id = $1", [req.params.id]);
-    res.json({ success: true, message: "Payment entry deleted successfully" });
+    res.json({ success: true, message: "Entry deleted successfully" });
   } catch (err) {
     res.json({ success: false, error: err.message });
   }
