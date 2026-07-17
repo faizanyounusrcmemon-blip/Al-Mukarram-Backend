@@ -34,17 +34,17 @@ async function getSaleAmount(ref_no) {
 }
 
 /* =====================================================
-   UPDATE PAYMENT STATUS
+   UPDATE PAYMENT STATUS (FIXED: Adjustments are now included in calculation)
 ===================================================== */
 async function updatePaymentStatus(ref_no) {
   const totalSale = await getSaleAmount(ref_no);
 
+  // FIXED: Removed the check that excluded 'adjustment' from calculation[cite: 23]
   const paid = await db.query(
     `
     SELECT COALESCE(SUM(amount),0) AS paid
     FROM customer_payments
     WHERE ref_no=$1
-    AND LOWER(COALESCE(type,''))!='adjustment'
     `,
     [ref_no]
   );
@@ -98,7 +98,6 @@ router.get("/:ref_no", async (req, res) => {
     let baseDate = new Date();
 
     /* ================= CUSTOMER INFO ================= */
-    // Filter out rows that have a Customer Code
     const customer = await db.query(
       `
       SELECT customer_name, booking_date
