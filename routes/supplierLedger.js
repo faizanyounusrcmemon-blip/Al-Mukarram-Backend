@@ -3,11 +3,10 @@ const router = express.Router();
 const db = require("../db");
 
 /* ================================
-   GET ALL PENDING / PARTIAL / EXTRA PAID SUPPLIERS
+   GET ALL PENDING / PARTIAL / EXTRA PAID SUPPLIERS (FIXED)
 ================================ */
 router.get("/pending", async (req, res) => {
   try {
-
     let snapshotId = null;
     let snapshotDate = null;
 
@@ -25,124 +24,82 @@ router.get("/pending", async (req, res) => {
 
     const q = await db.query(`
       WITH purchase_totals AS (
-
         SELECT
           supplier_code,
           COALESCE(SUM(purchase_pkr), 0) AS total_purchase
-
         FROM purchase_entries
-
         WHERE is_deleted = false
-        AND (
-          $2::date IS NULL
-          OR created_at::date > $2
-        )
-
+        AND ($2::date IS NULL OR created_at::date > $2)
         GROUP BY supplier_code
-
       ),
 
+      -- ✨ NEW: Live table se opening balance alag sum karenge aur actual payments alag
       payment_totals AS (
-
         SELECT
-          s.id AS supplier_id,
           s.supplier_code,
-          COALESCE(SUM(sp.amount), 0) AS total_paid
-
+          COALESCE(SUM(CASE WHEN sp.type = 'opening_balance' THEN sp.amount ELSE 0 END), 0) AS live_opening_balance,
+          COALESCE(SUM(CASE WHEN sp.type != 'opening_balance' THEN sp.amount ELSE 0 END), 0) AS total_paid
         FROM suppliers s
-
         LEFT JOIN supplier_payments sp
           ON sp.supplier_id = s.id
-          AND (
-            $2::date IS NULL
-            OR sp.payment_date > $2
-          )
-
+          AND ($2::date IS NULL OR sp.payment_date > $2)
         WHERE s.is_deleted = false
-
-        GROUP BY s.id, s.supplier_code
-
+        GROUP BY s.supplier_code
       ),
 
-snapshot_balances AS (
-
-SELECT
-code,
-balance
-
-FROM archive_balances
-
-WHERE snapshot_id = $1
-AND balance_type='SUPPLIER'
-
-)
+      snapshot_balances AS (
+        SELECT code, balance
+        FROM archive_balances
+        WHERE snapshot_id = $1 AND balance_type='SUPPLIER'
+      )
 
       SELECT
-
         s.supplier_code,
         s.supplier_name,
 
-        COALESCE(sb.balance, 0) +
-        COALESCE(pt.total_purchase, 0)
-          AS total_purchase,
-
-        COALESCE(ptot.total_paid, 0)
-          AS total_paid,
-
+        -- Total demand includes Archive Snapshot + Purchases + Live Opening Balance
         (
-          COALESCE(sb.balance, 0)
-          +
-          COALESCE(pt.total_purchase, 0)
-          -
+          COALESCE(sb.balance, 0) +
+          COALESCE(pt.total_purchase, 0) +
+          COALESCE(ptot.live_opening_balance, 0)
+        ) AS total_purchase,
+
+        COALESCE(ptot.total_paid, 0) AS total_paid,
+
+        -- ✨ PENDING AMOUNT FORMULA: Snapshot + Purchase + Live Opening Balance - Total Paid
+        (
+          COALESCE(sb.balance, 0) +
+          COALESCE(pt.total_purchase, 0) +
+          COALESCE(ptot.live_opening_balance, 0) -
           COALESCE(ptot.total_paid, 0)
         ) AS pending_amount,
 
         CASE
-
           WHEN (
-            COALESCE(sb.balance, 0)
-            +
-            COALESCE(pt.total_purchase, 0)
-            -
+            COALESCE(sb.balance, 0) +
+            COALESCE(pt.total_purchase, 0) +
+            COALESCE(ptot.live_opening_balance, 0) -
             COALESCE(ptot.total_paid, 0)
-          ) < -0.5
-          THEN 'EXTRA PAID'
+          ) < -0.5 THEN 'EXTRA PAID'
 
           WHEN ABS(
-            COALESCE(sb.balance, 0)
-            +
-            COALESCE(pt.total_purchase, 0)
-            -
+            COALESCE(sb.balance, 0) +
+            COALESCE(pt.total_purchase, 0) +
+            COALESCE(ptot.live_opening_balance, 0) -
             COALESCE(ptot.total_paid, 0)
-          ) <= 0.5
-          THEN 'PAID'
+          ) <= 0.5 THEN 'PAID'
 
-          WHEN COALESCE(ptot.total_paid, 0) > 0
-          THEN 'PARTIAL'
-
+          WHEN COALESCE(ptot.total_paid, 0) > 0 THEN 'PARTIAL'
           ELSE 'PENDING'
-
         END AS status
 
       FROM suppliers s
-
-      LEFT JOIN purchase_totals pt
-        ON pt.supplier_code = s.supplier_code
-
-      LEFT JOIN payment_totals ptot
-        ON ptot.supplier_code = s.supplier_code
-
-      LEFT JOIN snapshot_balances sb
-        ON sb.code = s.supplier_code
-
+      LEFT JOIN purchase_totals pt ON pt.supplier_code = s.supplier_code
+      LEFT JOIN payment_totals ptot ON ptot.supplier_code = s.supplier_code
+      LEFT JOIN snapshot_balances sb ON sb.code = s.supplier_code
       WHERE s.is_deleted = false
-
       ORDER BY pending_amount DESC, s.supplier_name
-
-    `, [
-      snapshotId,
-      snapshotDate
-    ]);
+    `, [snapshotId, snapshotDate]);
 
     res.json({
       success: true,
