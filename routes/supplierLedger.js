@@ -189,6 +189,63 @@ router.delete("/delete/:entryId", async (req, res) => {
   }
 });
 
+/* ====================================================
+   EDIT LEDGER ENTRY (SAME SYSTEM PASSWORD LOOKUP)
+==================================================== */
+router.put("/edit/:entryId", async (req, res) => {
+  try {
+    const { entryId } = req.params;
+    const { password, amount, payment_date, payment_method, type } = req.body;
+
+    if (!entryId || isNaN(entryId)) {
+      return res.json({ success: false, error: "Invalid entry ID" });
+    }
+
+    if (!amount || amount <= 0) {
+      return res.json({ success: false, error: "Invalid amount" });
+    }
+
+    // 🔑 Same Dynamic Database Password Lookup
+    const passCheck = await db.query(
+      "SELECT password_val FROM system_passwords WHERE key_name = $1", 
+      ['delete_supplier_payment']
+    );
+    
+    if (passCheck.rows.length === 0) {
+      return res.json({ success: false, error: "System password not configured in database!" });
+    }
+
+    const dbPassword = passCheck.rows[0].password_val;
+
+    if (password !== dbPassword) {
+      return res.json({ success: false, error: "Wrong password" });
+    }
+
+    // Check entry exists
+    const check = await db.query(
+      "SELECT id FROM supplier_payments WHERE id = $1",
+      [entryId]
+    );
+
+    if (!check.rows.length) {
+      return res.json({ success: false, error: "Payment entry not found" });
+    }
+
+    // Update entry details
+    await db.query(`
+      UPDATE supplier_payments 
+      SET amount = $1, payment_date = $2, payment_method = $3, type = $4
+      WHERE id = $5
+    `, [amount, payment_date, payment_method, type, entryId]);
+
+    res.json({ success: true, message: "Entry updated successfully" });
+
+  } catch (e) {
+    console.error("Edit error:", e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 /* ================================
    SAVE PAYMENT / ADJUSTMENT / OPENING BALANCE
 ================================ */

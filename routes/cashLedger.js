@@ -203,7 +203,6 @@ router.get("/", async (req, res) => {
   }
 });
 
-
 /* ======================================================
    SAVE MANUAL CASH ENTRY
 ====================================================== */
@@ -271,6 +270,63 @@ router.delete("/transaction/:id", async (req, res) => {
       message: "Transaction deleted"
     });
   } catch (err) {
+    res.json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+/* ======================================================
+   EDIT MANUAL CASH TRANSACTION (DYNAMIC DB PASSWORD CHECK)
+====================================================== */
+router.put("/transaction/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { txn_date, type, amount, comment, password } = req.body;
+
+    if (!id || isNaN(id)) {
+      return res.json({ success: false, error: "Invalid transaction ID" });
+    }
+
+    if (!txn_date || !amount || !type) {
+      return res.json({ success: false, error: "Missing required fields" });
+    }
+
+    if (Number(amount) <= 0) {
+      return res.json({ success: false, error: "Amount must be greater than zero" });
+    }
+
+    // 🔑 Authorization Password Check
+    const passCheck = await pool.query(
+      "SELECT password_val FROM system_passwords WHERE key_name = $1",
+      ["delete_cash_transaction"]
+    );
+
+    if (passCheck.rows.length === 0) {
+      return res.json({ success: false, error: "System password not configured in database!" });
+    }
+
+    if (password !== passCheck.rows[0].password_val) {
+      return res.json({ success: false, error: "Wrong Password!" });
+    }
+
+    // Update Record
+    await pool.query(
+      `
+      UPDATE cash_transactions
+      SET txn_date = $1, type = $2, amount = $3, comment = $4
+      WHERE id = $5
+      `,
+      [txn_date, type, amount, comment || "", id]
+    );
+
+    res.json({
+      success: true,
+      message: "Transaction updated successfully"
+    });
+  } catch (err) {
+    console.error("CASH LEDGER EDIT ERROR:", err);
     res.json({
       success: false,
       error: err.message

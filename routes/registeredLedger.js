@@ -400,4 +400,57 @@ router.post("/delete/:id", async (req, res) => {
   }
 });
 
+/* =====================================================
+   5. EDIT PAYMENT / ENTRY (LOOKUP BY ID WITH PASSWORD)
+===================================================== */
+router.put("/edit/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { password, amount, payment_date, payment_method, type } = req.body;
+
+    if (!id || isNaN(id)) {
+      return res.json({ success: false, error: "Invalid transaction ID" });
+    }
+
+    if (!amount || Number(amount) <= 0) {
+      return res.json({ success: false, error: "Amount must be greater than zero" });
+    }
+
+    // 🔑 Dynamic Database Password Verification
+    const passCheck = await db.query(
+      "SELECT password_val FROM system_passwords WHERE key_name = $1",
+      ["delete_registered_payment"]
+    );
+
+    if (passCheck.rows.length === 0) {
+      return res.json({ success: false, error: "Delete/Edit Password is not configured in DB." });
+    }
+
+    if (password !== passCheck.rows[0].password_val) {
+      return res.json({ success: false, error: "Invalid Authorization Password!" });
+    }
+
+    // Verify entry existence
+    const check = await db.query("SELECT id FROM customer_payments WHERE id = $1", [id]);
+    if (check.rows.length === 0) {
+      return res.json({ success: false, error: "Payment entry not found!" });
+    }
+
+    // Perform Update
+    await db.query(
+      `
+      UPDATE customer_payments
+      SET amount = $1, payment_date = $2, payment_method = $3, type = $4
+      WHERE id = $5
+      `,
+      [amount, payment_date, payment_method, type, id]
+    );
+
+    res.json({ success: true, message: "Entry updated successfully" });
+  } catch (err) {
+    console.error("Edit error:", err);
+    res.json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;

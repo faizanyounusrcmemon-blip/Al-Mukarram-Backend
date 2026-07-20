@@ -321,4 +321,85 @@ router.delete("/delete/:id", async (req, res) => {
   }
 });
 
+
+/* =====================================================
+   EDIT CUSTOMER PAYMENT (WITH PASSWORD & STATUS RE-CALC)
+===================================================== */
+router.put("/edit/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { password, amount, payment_date, payment_method, type } = req.body;
+
+    if (!id || isNaN(id)) {
+      return res.json({ success: false, error: "Invalid payment ID" });
+    }
+
+    if (!amount || Number(amount) <= 0) {
+      return res.json({ success: false, error: "Amount must be greater than zero" });
+    }
+
+    if (!payment_date) {
+      return res.json({ success: false, error: "Payment date is required" });
+    }
+
+    // 🔑 Authorization Password Check
+    const passCheck = await db.query(
+      "SELECT password_val FROM system_passwords WHERE key_name = $1",
+      ["delete_customer_payment"]
+    );
+
+    if (passCheck.rows.length === 0) {
+      return res.json({ success: false, error: "Authorization password not configured in system_passwords table!" });
+    }
+
+    if (password !== passCheck.rows[0].password_val) {
+      return res.json({ success: false, error: "Wrong Password!" });
+    }
+
+    const client = await db.connect();
+    try {
+      await client.query("BEGIN");
+
+      // Verify payment record exists & retrieve reference number
+      const payRes = await client.query(
+        "SELECT ref_no FROM customer_payments WHERE id = $1",
+        [id]
+      );
+
+      if (payRes.rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.json({ success: false, error: "Payment record not found!" });
+      }
+
+      const ref_no = payRes.rows[0].ref_no;
+
+      // Perform Update
+      await client.query(
+        `
+        UPDATE customer_payments
+        SET amount = $1, payment_date = $2, payment_method = $3, type = $4
+        WHERE id = $5
+        `,
+        [amount, payment_date, payment_method || "Bank", type || "payment", id]
+      );
+
+      await client.query("COMMIT");
+
+      // Recalculate and sync status across package/booking tables
+      await updatePaymentStatus(ref_no);
+
+      res.json({ success: true, message: "Payment entry updated successfully" });
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+
+  } catch (err) {
+    console.error("CUSTOMER LEDGER EDIT ERROR:", err);
+    res.json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;
