@@ -149,6 +149,9 @@ app.use("/api/customers", require("../routes/customers"));
 app.use("/supplier", require("../routes/supplier"));
 app.use("/api/supplier", require("../routes/supplier"));
 
+app.use("/banks", require("../routes/banks"));
+app.use("/api/banks", require("../routes/banks"));
+
 // ==========================
 // AUTH
 // ==========================
