@@ -4,10 +4,9 @@ const db = require("../db");
 
 /* =====================================================
    HELPERS: CUSTOMER TOTAL SALES (DEBIT VALUES)
-   Strictly using customer_code[cite: 22]
+   Strictly using customer_code
 ===================================================== */
 async function getRegCustomerSale(customer_code) {
-  // 1. Get all standard sales
   const sale = await db.query(
     `
     SELECT COALESCE(SUM(amount), 0) AS total_sale
@@ -32,7 +31,6 @@ async function getRegCustomerSale(customer_code) {
     [customer_code]
   );
 
-  // 2. Add Opening Balances (which act as Debits) from customer_payments table
   const openingBal = await db.query(
     `
     SELECT COALESCE(SUM(amount), 0) AS op_bal 
@@ -47,7 +45,7 @@ async function getRegCustomerSale(customer_code) {
 
 /* =====================================================
    HELPERS: CUSTOMER TOTAL PAYMENTS (CREDIT VALUES ONLY)
-   Excluding 'opening_balance' since it is treated as a Debit[cite: 22]
+   Excluding 'opening_balance' since it is treated as a Debit
 ===================================================== */
 async function getRegCustomerPayments(customer_code) {
   const paid = await db.query(
@@ -72,7 +70,7 @@ router.get("/detail/:customer_code", async (req, res) => {
     let balance = 0;
     let customerName = "Registered Customer";
 
-    // Dynamic customer name lookup using the REAL customer_code
+    // Dynamic customer name lookup
     const nameRes = await db.query(
       `
       SELECT customer_name FROM (
@@ -122,19 +120,28 @@ router.get("/detail/:customer_code", async (req, res) => {
       [customer_code]
     );
 
-    // Load Payments (Mapped with ref_no which is our stored customer_code)
+    // Load Payments WITH Bank Join
     const paymentsRes = await db.query(
       `
-      SELECT id, payment_date, amount, type, payment_method 
-      FROM customer_payments 
-      WHERE ref_no=$1
+      SELECT 
+        cp.id, 
+        cp.payment_date, 
+        cp.amount, 
+        cp.type, 
+        cp.payment_method, 
+        cp.bank_profile_id,
+        b.bank_name
+      FROM customer_payments cp
+      LEFT JOIN public.banks b ON b.id = cp.bank_profile_id
+      WHERE cp.ref_no = $1
+      ORDER BY cp.payment_date, cp.id
       `,
       [customer_code]
     );
 
     let allEntries = [];
 
-    // Map Sales: INVOICE IS DEBIT (+)
+    // Map Sales
     salesRes.rows.forEach(s => {
       const amt = Math.round(Number(s.total_pkr || 0));
       allEntries.push({
@@ -150,6 +157,11 @@ router.get("/detail/:customer_code", async (req, res) => {
     // Map Payments & Opening Balances
     paymentsRes.rows.forEach(p => {
       const amt = Math.round(Number(p.amount || 0));
+      let methodDesc = p.payment_method || "";
+      if (p.payment_method?.toLowerCase() === "bank" && p.bank_name) {
+        methodDesc = `Bank: ${p.bank_name}`;
+      }
+
       if (p.type === "opening_balance") {
         allEntries.push({
           id: p.id,
@@ -157,16 +169,18 @@ router.get("/detail/:customer_code", async (req, res) => {
           description: `🔑 Opening Balance (Debit Setup)`,
           debit: amt,
           credit: 0,
-          type: "opening_balance"
+          type: "opening_balance",
+          bank_profile_id: p.bank_profile_id
         });
       } else {
         allEntries.push({
           id: p.id,
           date: p.payment_date,
-          description: p.type === "adjustment" ? `Adjustment Receipt (${p.payment_method || ""})` : `Payment Received (${p.payment_method || ""})`,
+          description: p.type === "adjustment" ? `Adjustment Receipt (${methodDesc})` : `Payment Received (${methodDesc})`,
           debit: 0,
           credit: amt,
-          type: "payment"
+          type: "payment",
+          bank_profile_id: p.bank_profile_id
         });
       }
     });
@@ -204,11 +218,10 @@ router.get("/detail/:customer_code", async (req, res) => {
 });
 
 /* =====================================================
-   2. GET ALL PENDING CUSTOMERS (FIXED: NO REFERENCE MIXING)
+   2. GET ALL PENDING CUSTOMERS
 ===================================================== */
 router.get("/pending/list", async (req, res) => {
   try {
-    // 1. Pehle hum database se un tamam UNIQUE customer_codes ki list nikalenge jo asal me valid hain (sales tables me hain)
     const validCustomerCodesRes = await db.query(
       `
       SELECT DISTINCT customer_code FROM bookings WHERE customer_code IS NOT NULL AND customer_code != '' AND is_deleted=false
@@ -235,12 +248,9 @@ router.get("/pending/list", async (req, res) => {
       return res.json({ success: true, rows: [] });
     }
 
-    // 2. Ab hum aggregate query chalayenge lekin strictly validCustomerCodes par filter laga kar!
-    // Is se payment table ke booking references (VISA-XXXXX) automatically discard ho jayenge.
     const result = await db.query(
       `
       WITH all_debits AS (
-        -- Standard module sales (Debits)
         SELECT customer_code, total_pkr AS amount FROM bookings WHERE customer_code = ANY($1) AND is_deleted=false
         UNION ALL
         SELECT customer_code, total_pkr FROM hotels WHERE customer_code = ANY($1) AND is_deleted=false
@@ -257,17 +267,14 @@ router.get("/pending/list", async (req, res) => {
         UNION ALL
         SELECT customer_code, total_pkr FROM ziyarat WHERE customer_code = ANY($1) AND is_deleted=false
         UNION ALL
-        -- Opening Balance acts as Debit (only for valid customer codes)
         SELECT ref_no AS customer_code, amount FROM customer_payments WHERE ref_no = ANY($1) AND type='opening_balance'
       ),
       
       all_credits AS (
-        -- Payments and adjustments (Credits) - strictly filtering by valid customer codes
         SELECT ref_no AS customer_code, amount FROM customer_payments WHERE ref_no = ANY($1) AND type != 'opening_balance'
       ),
 
       customer_names AS (
-        -- Get unique customer name mapping for valid customer codes
         SELECT DISTINCT ON (customer_code) customer_code, customer_name
         FROM (
           SELECT customer_code, customer_name FROM bookings WHERE customer_code = ANY($1) AND customer_name IS NOT NULL AND customer_name != '' AND is_deleted=false
@@ -346,7 +353,7 @@ router.get("/pending/list", async (req, res) => {
 router.post("/payment", async (req, res) => {
   const client = await db.connect();
   try {
-    const { customer_code, amount, payment_method, type, payment_date } = req.body;
+    const { customer_code, amount, payment_method, bank_profile_id, type, payment_date } = req.body;
 
     if (!customer_code) return res.json({ success: false, error: "Customer Code is required" });
     if (!amount || Number(amount) <= 0) return res.json({ success: false, error: "Amount must be greater than zero" });
@@ -354,13 +361,19 @@ router.post("/payment", async (req, res) => {
 
     await client.query("BEGIN");
     
-    // Saving customer_code securely in the ref_no identifier field
     await client.query(
       `
-      INSERT INTO customer_payments (ref_no, amount, payment_method, type, payment_date)
-      VALUES ($1, $2, $3, $4, $5)
+      INSERT INTO customer_payments (ref_no, amount, payment_method, bank_profile_id, type, payment_date)
+      VALUES ($1, $2, $3, $4, $5, $6)
       `,
-      [customer_code, amount, payment_method, type, payment_date]
+      [
+        customer_code, 
+        amount, 
+        payment_method || "Cash", 
+        payment_method === "Bank" ? bank_profile_id : null,
+        type || "payment", 
+        payment_date
+      ]
     );
     await client.query("COMMIT");
 
@@ -406,7 +419,7 @@ router.post("/delete/:id", async (req, res) => {
 router.put("/edit/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const { password, amount, payment_date, payment_method, type } = req.body;
+    const { password, amount, payment_date, payment_method, bank_profile_id, type } = req.body;
 
     if (!id || isNaN(id)) {
       return res.json({ success: false, error: "Invalid transaction ID" });
@@ -416,7 +429,6 @@ router.put("/edit/:id", async (req, res) => {
       return res.json({ success: false, error: "Amount must be greater than zero" });
     }
 
-    // 🔑 Dynamic Database Password Verification
     const passCheck = await db.query(
       "SELECT password_val FROM system_passwords WHERE key_name = $1",
       ["delete_registered_payment"]
@@ -430,20 +442,25 @@ router.put("/edit/:id", async (req, res) => {
       return res.json({ success: false, error: "Invalid Authorization Password!" });
     }
 
-    // Verify entry existence
     const check = await db.query("SELECT id FROM customer_payments WHERE id = $1", [id]);
     if (check.rows.length === 0) {
       return res.json({ success: false, error: "Payment entry not found!" });
     }
 
-    // Perform Update
     await db.query(
       `
       UPDATE customer_payments
-      SET amount = $1, payment_date = $2, payment_method = $3, type = $4
-      WHERE id = $5
+      SET amount = $1, payment_date = $2, payment_method = $3, bank_profile_id = $4, type = $5
+      WHERE id = $6
       `,
-      [amount, payment_date, payment_method, type, id]
+      [
+        amount, 
+        payment_date, 
+        payment_method || "Bank", 
+        payment_method === "Bank" ? bank_profile_id : null,
+        type || "payment", 
+        id
+      ]
     );
 
     res.json({ success: true, message: "Entry updated successfully" });

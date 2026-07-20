@@ -34,12 +34,11 @@ async function getSaleAmount(ref_no) {
 }
 
 /* =====================================================
-   UPDATE PAYMENT STATUS (FIXED: Adjustments are now included in calculation)
+   UPDATE PAYMENT STATUS
 ===================================================== */
 async function updatePaymentStatus(ref_no) {
   const totalSale = await getSaleAmount(ref_no);
 
-  // FIXED: Removed the check that excluded 'adjustment' from calculation[cite: 23]
   const paid = await db.query(
     `
     SELECT COALESCE(SUM(amount),0) AS paid
@@ -85,6 +84,47 @@ async function updatePaymentStatus(ref_no) {
 
   return status;
 }
+
+/* =====================================================
+   PAYMENT PENDING / PARTIAL LIST
+===================================================== */
+router.get("/pending/list", async (req, res) => {
+  try {
+    const result = await db.query(
+      `
+      SELECT *
+      FROM (
+        SELECT ref_no, customer_name, payment_status FROM bookings WHERE is_deleted=false AND payment_status IN ('PENDING','PARTIAL') AND (customer_code IS NULL OR customer_code = '')
+        UNION ALL
+        SELECT ref_no, customer_name, payment_status FROM hotels WHERE is_deleted=false AND payment_status IN ('PENDING','PARTIAL') AND (customer_code IS NULL OR customer_code = '')
+        UNION ALL
+        SELECT ref_no, customer_name, payment_status FROM visa WHERE is_deleted=false AND payment_status IN ('PENDING','PARTIAL') AND (customer_code IS NULL OR customer_code = '')
+        UNION ALL
+        SELECT ref_no, customer_name, payment_status FROM card WHERE is_deleted=false AND payment_status IN ('PENDING','PARTIAL') AND (customer_code IS NULL OR customer_code = '')
+        UNION ALL
+        SELECT ref_no, customer_name, payment_status FROM groups WHERE is_deleted=false AND payment_status IN ('PENDING','PARTIAL') AND (customer_code IS NULL OR customer_code = '')
+        UNION ALL
+        SELECT ref_no, customer_name, payment_status FROM ticketing WHERE is_deleted=false AND payment_status IN ('PENDING','PARTIAL') AND (customer_code IS NULL OR customer_code = '')
+        UNION ALL
+        SELECT ref_no, customer_name, payment_status FROM transport WHERE is_deleted=false AND payment_status IN ('PENDING','PARTIAL') AND (customer_code IS NULL OR customer_code = '')
+        UNION ALL
+        SELECT ref_no, customer_name, payment_status FROM ziyarat WHERE is_deleted=false AND payment_status IN ('PENDING','PARTIAL') AND (customer_code IS NULL OR customer_code = '')
+      ) x
+      ORDER BY ref_no DESC
+      `
+    );
+
+    res.json({
+      success: true,
+      rows: result.rows
+    });
+  } catch (err) {
+    res.json({
+      success: false,
+      error: err.message
+    });
+  }
+});
 
 /* =====================================================
    CUSTOMER LEDGER DETAIL
@@ -161,10 +201,17 @@ router.get("/:ref_no", async (req, res) => {
     /* ================= PAYMENTS ================= */
     const payments = await db.query(
       `
-      SELECT id, payment_date, amount, type, payment_method
-      FROM customer_payments
-      WHERE ref_no=$1
-      ORDER BY payment_date, id
+      SELECT 
+        cp.id, 
+        cp.payment_date, 
+        cp.amount, 
+        cp.type, 
+        cp.payment_method, 
+        b.bank_name
+      FROM customer_payments cp
+      LEFT JOIN public.banks b ON b.id = cp.bank_profile_id
+      WHERE cp.ref_no = $1
+      ORDER BY cp.payment_date, cp.id
       `,
       [ref_no]
     );
@@ -173,64 +220,30 @@ router.get("/:ref_no", async (req, res) => {
       const amount = Math.round(Number(p.amount || 0));
       balance -= amount;
 
+      let methodDesc = p.payment_method || "";
+      if (p.payment_method?.toLowerCase() === "bank" && p.bank_name) {
+        methodDesc = `Bank: ${p.bank_name}`;
+      }
+
       rows.push({
         id: p.id,
         date: p.payment_date,
-        description: p.type === "adjustment" ? "Adjustment" : `Payment Received (${p.payment_method || ""})`,
+        description: p.type === "adjustment" ? "Adjustment" : `Payment Received (${methodDesc})`,
         debit: amount,
         credit: 0,
         balance
       });
     });
 
+    // 👈 Response return missing tha, set kar diya
     res.json({
       success: true,
-      customer: customerName,
-      rows
+      rows,
+      customerName,
+      totalSale,
+      currentBalance: balance
     });
 
-  } catch (err) {
-    console.error("CUSTOMER LEDGER ERROR:", err);
-    res.json({
-      success: false,
-      error: err.message
-    });
-  }
-});
-
-/* =====================================================
-   PAYMENT PENDING / PARTIAL LIST (Bypasses Registered Customers)
-===================================================== */
-router.get("/pending/list", async (req, res) => {
-  try {
-    const result = await db.query(
-      `
-      SELECT *
-      FROM (
-        SELECT ref_no, customer_name, payment_status FROM bookings WHERE is_deleted=false AND payment_status IN ('PENDING','PARTIAL') AND (customer_code IS NULL OR customer_code = '')
-        UNION ALL
-        SELECT ref_no, customer_name, payment_status FROM hotels WHERE is_deleted=false AND payment_status IN ('PENDING','PARTIAL') AND (customer_code IS NULL OR customer_code = '')
-        UNION ALL
-        SELECT ref_no, customer_name, payment_status FROM visa WHERE is_deleted=false AND payment_status IN ('PENDING','PARTIAL') AND (customer_code IS NULL OR customer_code = '')
-        UNION ALL
-        SELECT ref_no, customer_name, payment_status FROM card WHERE is_deleted=false AND payment_status IN ('PENDING','PARTIAL') AND (customer_code IS NULL OR customer_code = '')
-        UNION ALL
-        SELECT ref_no, customer_name, payment_status FROM groups WHERE is_deleted=false AND payment_status IN ('PENDING','PARTIAL') AND (customer_code IS NULL OR customer_code = '')
-        UNION ALL
-        SELECT ref_no, customer_name, payment_status FROM ticketing WHERE is_deleted=false AND payment_status IN ('PENDING','PARTIAL') AND (customer_code IS NULL OR customer_code = '')
-        UNION ALL
-        SELECT ref_no, customer_name, payment_status FROM transport WHERE is_deleted=false AND payment_status IN ('PENDING','PARTIAL') AND (customer_code IS NULL OR customer_code = '')
-        UNION ALL
-        SELECT ref_no, customer_name, payment_status FROM ziyarat WHERE is_deleted=false AND payment_status IN ('PENDING','PARTIAL') AND (customer_code IS NULL OR customer_code = '')
-      ) x
-      ORDER BY ref_no DESC
-      `
-    );
-
-    res.json({
-      success: true,
-      rows: result.rows
-    });
   } catch (err) {
     res.json({
       success: false,
@@ -245,7 +258,7 @@ router.get("/pending/list", async (req, res) => {
 router.post("/payment", async (req, res) => {
   const client = await db.connect();
   try {
-    const { ref_no, amount, payment_method, type, payment_date } = req.body;
+    const { ref_no, amount, payment_method, bank_profile_id, type, payment_date } = req.body;
 
     if (!ref_no) return res.json({ success: false, error: "Ref No required" });
     if (!amount || Number(amount) <= 0) return res.json({ success: false, error: "Invalid amount" });
@@ -254,10 +267,17 @@ router.post("/payment", async (req, res) => {
     await client.query("BEGIN");
     await client.query(
       `
-      INSERT INTO customer_payments (ref_no, amount, payment_method, type, payment_date)
-      VALUES ($1, $2, $3, $4, $5)
+      INSERT INTO customer_payments (ref_no, amount, payment_method, bank_profile_id, type, payment_date)
+      VALUES ($1, $2, $3, $4, $5, $6)
       `,
-      [ref_no, amount, payment_method || "cash", type || "payment", payment_date]
+      [
+        ref_no, 
+        amount, 
+        payment_method || "cash", 
+        payment_method === "Bank" ? bank_profile_id : null, 
+        type || "payment", 
+        payment_date
+      ]
     );
 
     await client.query("COMMIT");
@@ -321,14 +341,13 @@ router.delete("/delete/:id", async (req, res) => {
   }
 });
 
-
 /* =====================================================
-   EDIT CUSTOMER PAYMENT (WITH PASSWORD & STATUS RE-CALC)
+   EDIT CUSTOMER PAYMENT
 ===================================================== */
 router.put("/edit/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const { password, amount, payment_date, payment_method, type } = req.body;
+    const { password, amount, payment_date, payment_method, bank_profile_id, type } = req.body;
 
     if (!id || isNaN(id)) {
       return res.json({ success: false, error: "Invalid payment ID" });
@@ -342,7 +361,6 @@ router.put("/edit/:id", async (req, res) => {
       return res.json({ success: false, error: "Payment date is required" });
     }
 
-    // 🔑 Authorization Password Check
     const passCheck = await db.query(
       "SELECT password_val FROM system_passwords WHERE key_name = $1",
       ["delete_customer_payment"]
@@ -360,7 +378,6 @@ router.put("/edit/:id", async (req, res) => {
     try {
       await client.query("BEGIN");
 
-      // Verify payment record exists & retrieve reference number
       const payRes = await client.query(
         "SELECT ref_no FROM customer_payments WHERE id = $1",
         [id]
@@ -373,19 +390,24 @@ router.put("/edit/:id", async (req, res) => {
 
       const ref_no = payRes.rows[0].ref_no;
 
-      // Perform Update
       await client.query(
         `
         UPDATE customer_payments
-        SET amount = $1, payment_date = $2, payment_method = $3, type = $4
-        WHERE id = $5
+        SET amount = $1, payment_date = $2, payment_method = $3, bank_profile_id = $4, type = $5
+        WHERE id = $6
         `,
-        [amount, payment_date, payment_method || "Bank", type || "payment", id]
+        [
+          amount, 
+          payment_date, 
+          payment_method || "Bank", 
+          payment_method === "Bank" ? bank_profile_id : null, 
+          type || "payment", 
+          id
+        ]
       );
 
       await client.query("COMMIT");
 
-      // Recalculate and sync status across package/booking tables
       await updatePaymentStatus(ref_no);
 
       res.json({ success: true, message: "Payment entry updated successfully" });

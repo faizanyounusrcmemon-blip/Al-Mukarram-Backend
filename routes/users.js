@@ -25,7 +25,7 @@ router.post("/create", async (req, res) => {
 
         packages, ticketing, transport, ziyarat, visa, hotels, card, groups,
         purchase_entry, purchase_list, pending_purchase,
-        registered_customer_ledger, customer_ledger, supplier_ledger, bank_ledger, expense_ledger, balance_sheet, cash_ledger,
+        registered_customer_ledger, customer_ledger, bank_profiles, supplier_ledger, bank_ledger, expense_ledger, balance_sheet, cash_ledger,
         hotel_voucher, hotel_voucher3in1, transport_voucher, customiz_transport_voucher, customiz_hotel_voucher,
         all_reports, all_reports_today, profit_report, monthly_profit_dashboard, sale_adjustment_report, supplier_purchase_detail_report, supplier_adjustment_only, item_loss_zero_report, sale_change_check_report,
         create_user, manage_users, supplier, customers_list, deleted_reports, restore, system_storage, password_settings,
@@ -36,7 +36,7 @@ router.post("/create", async (req, res) => {
 
         false, false, false, false, false, false, false, false,
         false, false, false,
-        false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false,
         false, false, false, false, false,
         false, false, false, false, false, false, false, false, false,
         false, false, false, false, false, false, false, false,
@@ -232,7 +232,7 @@ router.post("/permissions/update", async (req, res) => {
     const perms = [
       "packages","ticketing","transport","ziyarat","visa","hotels","card","groups",
       "purchase_entry","purchase_list","pending_purchase",
-      "registered_customer_ledger","customer_ledger","supplier_ledger","bank_ledger","expense_ledger","balance_sheet","cash_ledger",
+      "registered_customer_ledger","customer_ledger","bank_profiles","supplier_ledger","bank_ledger","expense_ledger","balance_sheet","cash_ledger",
       "hotel_voucher","hotel_voucher3in1","transport_voucher","customiz_transport_voucher","customiz_hotel_voucher",
       "all_reports","all_reports_today","profit_report","monthly_profit_dashboard","sale_adjustment_report","supplier_purchase_detail_report","supplier_adjustment_only","item_loss_zero_report","sale_change_check_report",
       "create_user","manage_users","supplier","customers_list","deleted_reports","restore","system_storage","password_settings",
