@@ -140,14 +140,14 @@ router.get("/detail/:customer_code", async (req, res) => {
 
     let allEntries = [];
 
-    // Map Sales (DEBIT)
+    // Map Sales (DEBIT) - Lene Hain
     salesRes.rows.forEach(s => {
       const amt = Math.round(Math.abs(parseFloat(s.total_pkr || 0)));
       allEntries.push({
         id: `SALE-${s.ref_no}`,
         date: s.booking_date,
         description: `Sale Invoice (${s.src}) - Ref: ${s.ref_no}`,
-        debit: amt,  // Lene hain (+)
+        debit: amt,  
         credit: 0,
         type: "sale"
       });
@@ -166,7 +166,7 @@ router.get("/detail/:customer_code", async (req, res) => {
           id: p.id,
           date: p.payment_date,
           description: `🔑 Opening Balance (Debit Setup)`,
-          debit: amt,  // Lene hain (+)
+          debit: amt,  // Opening balance is Receivable (Debit)
           credit: 0,
           type: "opening_balance",
           bank_profile_id: p.bank_profile_id
@@ -177,7 +177,7 @@ router.get("/detail/:customer_code", async (req, res) => {
           date: p.payment_date,
           description: p.type === "adjustment" ? `Adjustment Receipt (${methodDesc})` : `Payment Received (${methodDesc})`,
           debit: 0,
-          credit: amt, // Mil gaye (-)
+          credit: amt, // Payments are Received (Credit)
           type: "payment",
           bank_profile_id: p.bank_profile_id
         });
@@ -191,7 +191,7 @@ router.get("/detail/:customer_code", async (req, res) => {
     let filteredRows = [];
 
     allEntries.forEach(entry => {
-      // Balance Formula: Balance + Debit - Credit
+      // Balance Formula: Current Balance + Debit - Credit
       balance = balance + Number(entry.debit) - Number(entry.credit);
       
       let matchDate = true;
