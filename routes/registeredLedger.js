@@ -67,7 +67,6 @@ router.get("/detail/:customer_code", async (req, res) => {
     const { customer_code } = req.params;
     const { startDate, endDate } = req.query;
 
-    let balance = 0;
     let customerName = "Registered Customer";
 
     // Dynamic customer name lookup
@@ -141,14 +140,14 @@ router.get("/detail/:customer_code", async (req, res) => {
 
     let allEntries = [];
 
-    // Map Sales
+    // Map Sales (DEBIT)
     salesRes.rows.forEach(s => {
-      const amt = Math.round(Number(s.total_pkr || 0));
+      const amt = Math.round(Math.abs(parseFloat(s.total_pkr || 0)));
       allEntries.push({
         id: `SALE-${s.ref_no}`,
         date: s.booking_date,
         description: `Sale Invoice (${s.src}) - Ref: ${s.ref_no}`,
-        debit: amt,
+        debit: amt,  // Lene hain (+)
         credit: 0,
         type: "sale"
       });
@@ -156,7 +155,7 @@ router.get("/detail/:customer_code", async (req, res) => {
 
     // Map Payments & Opening Balances
     paymentsRes.rows.forEach(p => {
-      const amt = Math.round(Number(p.amount || 0));
+      const amt = Math.round(Math.abs(parseFloat(p.amount || 0)));
       let methodDesc = p.payment_method || "";
       if (p.payment_method?.toLowerCase() === "bank" && p.bank_name) {
         methodDesc = `Bank: ${p.bank_name}`;
@@ -167,7 +166,7 @@ router.get("/detail/:customer_code", async (req, res) => {
           id: p.id,
           date: p.payment_date,
           description: `🔑 Opening Balance (Debit Setup)`,
-          debit: amt,
+          debit: amt,  // Lene hain (+)
           credit: 0,
           type: "opening_balance",
           bank_profile_id: p.bank_profile_id
@@ -178,19 +177,22 @@ router.get("/detail/:customer_code", async (req, res) => {
           date: p.payment_date,
           description: p.type === "adjustment" ? `Adjustment Receipt (${methodDesc})` : `Payment Received (${methodDesc})`,
           debit: 0,
-          credit: amt,
+          credit: amt, // Mil gaye (-)
           type: "payment",
           bank_profile_id: p.bank_profile_id
         });
       }
     });
 
-    // Sort entries chronologically by date
-    allEntries.sort((a, b) => new Date(a.date) - new Date(b.date));
+    // Chronological Sorting Fix
+    allEntries.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
+    let balance = 0;
     let filteredRows = [];
+
     allEntries.forEach(entry => {
-      balance = balance + entry.debit - entry.credit;
+      // Balance Formula: Balance + Debit - Credit
+      balance = balance + Number(entry.debit) - Number(entry.credit);
       
       let matchDate = true;
       if (startDate && new Date(entry.date) < new Date(startDate)) matchDate = false;
@@ -368,7 +370,7 @@ router.post("/payment", async (req, res) => {
       `,
       [
         customer_code, 
-        amount, 
+        Math.abs(parseFloat(amount)), 
         payment_method || "Cash", 
         payment_method === "Bank" ? bank_profile_id : null,
         type || "payment", 
@@ -454,7 +456,7 @@ router.put("/edit/:id", async (req, res) => {
       WHERE id = $6
       `,
       [
-        amount, 
+        Math.abs(parseFloat(amount)), 
         payment_date, 
         payment_method || "Bank", 
         payment_method === "Bank" ? bank_profile_id : null,
@@ -471,3 +473,4 @@ router.put("/edit/:id", async (req, res) => {
 });
 
 module.exports = router;
+       
