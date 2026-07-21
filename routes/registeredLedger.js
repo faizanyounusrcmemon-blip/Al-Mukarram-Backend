@@ -221,7 +221,7 @@ router.get("/detail/:customer_code", async (req, res) => {
 });
 
 /* =====================================================
-   2. GET ALL PENDING CUSTOMERS
+   2. GET ALL PENDING CUSTOMERS (FIXED: NAME FROM PAYMENTS / CUSTOMERS)
 ===================================================== */
 router.get("/pending/list", async (req, res) => {
   try {
@@ -279,6 +279,7 @@ router.get("/pending/list", async (req, res) => {
         SELECT ref_no AS customer_code, amount FROM customer_payments WHERE ref_no = ANY($1) AND type != 'opening_balance'
       ),
 
+      /* ✨ FIX: Dynamic Customer Name Lookup including Master Customers & Payments Table */
       customer_names AS (
         SELECT DISTINCT ON (customer_code) customer_code, customer_name
         FROM (
@@ -297,6 +298,9 @@ router.get("/pending/list", async (req, res) => {
           SELECT customer_code, customer_name FROM transport WHERE customer_code = ANY($1) AND customer_name IS NOT NULL AND customer_name != '' AND is_deleted=false
           UNION ALL
           SELECT customer_code, customer_name FROM ziyarat WHERE customer_code = ANY($1) AND customer_name IS NOT NULL AND customer_name != '' AND is_deleted=false
+          UNION ALL
+          /* Master Customer Table Lookup (Agar master table hai) */
+          SELECT customer_code, name AS customer_name FROM customers WHERE customer_code = ANY($1) AND name IS NOT NULL AND name != ''
         ) n
       ),
 
