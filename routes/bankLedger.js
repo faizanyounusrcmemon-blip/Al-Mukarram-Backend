@@ -17,6 +17,8 @@ router.get("/profiles", async (req, res) => {
   }
 });
 
+
+
 /* ======================================================
    GET BANK LEDGER (PROFILE WISE)
 ====================================================== */
@@ -24,7 +26,6 @@ router.get("/", async (req, res) => {
   try {
     const { bank_profile_id } = req.query;
 
-    // اگر بینک آئ ڈی پاس نہیں کی گئی تو خالی رسپانس لوٹائیں
     if (!bank_profile_id) {
       return res.json({ success: true, rows: [] });
     }
@@ -53,44 +54,24 @@ router.get("/", async (req, res) => {
     const expBankFilter = "AND e.bank_profile_id = $2";
 
     const sql = `
-    WITH opening AS (
-        SELECT
-          0 AS id,
-          $1::date AS txn_date,
-          'Opening Bank Balance' AS description,
-          CASE WHEN opening_bank > 0 THEN ROUND(opening_bank::numeric,0) END AS credit,
-          CASE WHEN opening_bank < 0 THEN ROUND(ABS(opening_bank)::numeric,0) END AS debit,
-          0 AS order_priority,
-          'opening' AS source,
-          NULL::integer AS bank_profile_id
-        FROM archive_snapshots
-        WHERE opening_bank IS NOT NULL
-        ORDER BY date_to DESC, id DESC
-        LIMIT 1
-    ),
+    WITH all_entries AS (
 
-    all_entries AS (
-        SELECT id, txn_date, description, credit, debit, order_priority, source, bank_profile_id FROM opening
-
-        UNION ALL
-
-        /* CUSTOMER BANK PAYMENTS */
+        /* ================= CUSTOMER BANK PAYMENTS ================= */
         SELECT
           cp.id,
           cp.payment_date::date AS txn_date,
           'Customer Payment - ' || COALESCE(
-             CASE 
-               WHEN cp.ref_no LIKE 'CUST-%' THEN
-                 (SELECT customer_name FROM (
-                    SELECT customer_name FROM bookings WHERE customer_code = cp.ref_no AND customer_name IS NOT NULL AND customer_name != ''
-                    UNION ALL SELECT customer_name FROM ticketing WHERE customer_code = cp.ref_no AND customer_name IS NOT NULL AND customer_name != ''
-                  ) reg_cust LIMIT 1)
-               ELSE
-                 (SELECT customer_name FROM (
-                    SELECT customer_name FROM bookings WHERE ref_no = cp.ref_no AND customer_name IS NOT NULL AND customer_name != ''
-                    UNION ALL SELECT customer_name FROM ticketing WHERE ref_no = cp.ref_no AND customer_name IS NOT NULL AND customer_name != ''
-                  ) walkin_cust LIMIT 1)
-             END, 'Walk-in Customer'
+             -- First check if reference is Customer Code or Ref No without date restriction
+             (SELECT customer_name FROM (
+                SELECT customer_name FROM bookings WHERE (customer_code = cp.ref_no OR ref_no = cp.ref_no) AND customer_name IS NOT NULL AND customer_name != ''
+                UNION ALL SELECT customer_name FROM ticketing WHERE (customer_code = cp.ref_no OR ref_no = cp.ref_no) AND customer_name IS NOT NULL AND customer_name != ''
+                UNION ALL SELECT customer_name FROM hotels WHERE (customer_code = cp.ref_no OR ref_no = cp.ref_no) AND customer_name IS NOT NULL AND customer_name != ''
+                UNION ALL SELECT customer_name FROM visa WHERE (customer_code = cp.ref_no OR ref_no = cp.ref_no) AND customer_name IS NOT NULL AND customer_name != ''
+                UNION ALL SELECT customer_name FROM card WHERE (customer_code = cp.ref_no OR ref_no = cp.ref_no) AND customer_name IS NOT NULL AND customer_name != ''
+                UNION ALL SELECT customer_name FROM groups WHERE (customer_code = cp.ref_no OR ref_no = cp.ref_no) AND customer_name IS NOT NULL AND customer_name != ''
+                UNION ALL SELECT customer_name FROM transport WHERE (customer_code = cp.ref_no OR ref_no = cp.ref_no) AND customer_name IS NOT NULL AND customer_name != ''
+                UNION ALL SELECT customer_name FROM ziyarat WHERE (customer_code = cp.ref_no OR ref_no = cp.ref_no) AND customer_name IS NOT NULL AND customer_name != ''
+              ) reg_cust LIMIT 1), 'Walk-in Customer'
           ) || ' (Ref: ' || cp.ref_no || ')' AS description,
           ROUND(cp.amount::numeric,0) AS credit,
           NULL::numeric AS debit,
@@ -99,13 +80,14 @@ router.get("/", async (req, res) => {
           cp.bank_profile_id
         FROM customer_payments cp
         WHERE LOWER(COALESCE(cp.type,'')) != 'adjustment'
+          AND LOWER(COALESCE(cp.type,'')) != 'opening_balance' -- Exclude Opening Balance
           AND LOWER(COALESCE(cp.payment_method,''))='bank'
           AND cp.payment_date::date >= $1::date
           ${cpBankFilter}
 
         UNION ALL
 
-        /* SUPPLIER BANK PAYMENTS */
+        /* ================= SUPPLIER BANK PAYMENTS ================= */
         SELECT
           sp.id,
           sp.payment_date::date AS txn_date,
@@ -118,13 +100,14 @@ router.get("/", async (req, res) => {
         FROM supplier_payments sp
         LEFT JOIN suppliers s ON s.id = sp.supplier_id
         WHERE LOWER(COALESCE(sp.type,'')) != 'adjustment'
+          AND LOWER(COALESCE(sp.type,'')) != 'opening_balance' -- Exclude Opening Balance
           AND LOWER(COALESCE(sp.payment_method,''))='bank'
           AND sp.payment_date::date >= $1::date
           ${spBankFilter}
 
         UNION ALL
 
-        /* EXPENSE BANK */
+        /* ================= EXPENSE BANK ================= */
         SELECT
           e.id,
           e.expense_date::date AS txn_date,
@@ -141,7 +124,7 @@ router.get("/", async (req, res) => {
 
         UNION ALL
 
-        /* MANUAL BANK (DEPOSIT / WITHDRAW) */
+        /* ================= MANUAL BANK (DEPOSIT / WITHDRAW) ================= */
         SELECT
           bt.id,
           bt.txn_date::date AS txn_date,
@@ -172,12 +155,8 @@ router.get("/", async (req, res) => {
     `;
 
     const result = await pool.query(sql, params);
-    let rows = result.rows;
-    if (!hasSnapshot) {
-      rows = rows.filter((r) => r.source !== "opening");
-    }
-
-    const formattedRows = rows.map((r) => ({
+    
+    const formattedRows = result.rows.map((r) => ({
       ...r,
       credit: Number(r.credit || 0),
       debit: Number(r.debit || 0),
@@ -190,6 +169,7 @@ router.get("/", async (req, res) => {
     res.json({ success: false, error: err.message, rows: [] });
   }
 });
+
 
 /* ======================================================
    SAVE MANUAL BANK ENTRY (DEPOSIT / WITHDRAW)

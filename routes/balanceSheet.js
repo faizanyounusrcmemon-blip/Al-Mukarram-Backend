@@ -3,7 +3,7 @@ const router = express.Router();
 const db = require("../db");
 
 /* =========================================
-   BALANCE SHEET (UPDATED: THREE SEPARATE SECTIONS)
+   BALANCE SHEET (FIXED: NO registered_customers TABLE)
 ========================================= */
 router.get("/", async (req, res) => {
   try {
@@ -19,7 +19,7 @@ router.get("/", async (req, res) => {
       snapshotDate = snapshot.rows[0].date_to;
     }
 
-    /* ========== 1. UNIQUE REGISTERED CODES EXTRACTION ========== */
+    /* ========== 1. ALL REGISTERED CUSTOMER CODES (FROM BOOKINGS & PAYMENTS) ========== */
     const regCustomerCodesRes = await db.query(`
       SELECT DISTINCT customer_code FROM bookings WHERE customer_code IS NOT NULL AND customer_code != '' AND is_deleted=false
       UNION SELECT customer_code FROM hotels WHERE customer_code IS NOT NULL AND customer_code != '' AND is_deleted=false
@@ -29,16 +29,16 @@ router.get("/", async (req, res) => {
       UNION SELECT customer_code FROM ticketing WHERE customer_code IS NOT NULL AND customer_code != '' AND is_deleted=false
       UNION SELECT customer_code FROM transport WHERE customer_code IS NOT NULL AND customer_code != '' AND is_deleted=false
       UNION SELECT customer_code FROM ziyarat WHERE customer_code IS NOT NULL AND customer_code != '' AND is_deleted=false
+      UNION SELECT ref_no AS customer_code FROM customer_payments WHERE ref_no LIKE 'CUST-%' AND is_deleted=false
     `);
 
-    const regCodes = regCustomerCodesRes.rows.map(row => row.customer_code);
+    const regCodes = regCustomerCodesRes.rows.map(row => row.customer_code).filter(Boolean);
 
-    /* ========== 2. STANDARD MODULE CUSTOMERS (ONLY WALK-IN / WITHOUT CODE) ========== */
+    /* ========== 2. STANDARD MODULE CUSTOMERS (WALK-IN) ========== */
     const customerSnapshot = await db.query(`
       SELECT code, balance FROM archive_balances WHERE snapshot_id=$1 AND balance_type='CUSTOMER'
     `, [snapshotId]);
 
-    // ✨ FIX: Yahan condition lagayi hai ke customer_code blank ya null ho taaki registered wahan na dikhe
     const customersData = await db.query(`
       SELECT * FROM (
         SELECT ref_no, customer_name, payment_status, total_pkr FROM bookings WHERE is_deleted = false AND payment_status IN ('PENDING','PARTIAL') AND (customer_code IS NULL OR customer_code = '')
@@ -62,7 +62,7 @@ router.get("/", async (req, res) => {
     const payments = await db.query(`
       SELECT ref_no, COALESCE(SUM(amount),0) AS received
       FROM customer_payments
-      WHERE ($1::date IS NULL OR payment_date > $1) AND type != 'opening_balance'
+      WHERE ($1::date IS NULL OR payment_date > $1) AND type != 'opening_balance' AND is_deleted = false
       GROUP BY ref_no
     `, [snapshotDate]);
 
@@ -82,7 +82,7 @@ router.get("/", async (req, res) => {
       };
     });
 
-    /* ========== 3. REGISTERED CUSTOMERS BALANCES (COMPLETELY SEPARATE) ========== */
+    /* ========== 3. REGISTERED CUSTOMERS BALANCES (WITH OPENING BALANCE INCLUDED) ========== */
     let registeredRows = [];
     if (regCodes.length > 0) {
       const regSalesAndPayments = await db.query(`
@@ -95,10 +95,11 @@ router.get("/", async (req, res) => {
           UNION ALL SELECT customer_code, total_pkr FROM ticketing WHERE customer_code = ANY($1) AND is_deleted=false
           UNION ALL SELECT customer_code, total_pkr FROM transport WHERE customer_code = ANY($1) AND is_deleted=false
           UNION ALL SELECT customer_code, total_pkr FROM ziyarat WHERE customer_code = ANY($1) AND is_deleted=false
-          UNION ALL SELECT ref_no AS customer_code, amount FROM customer_payments WHERE ref_no = ANY($1) AND type='opening_balance'
+          /* ✨ OPENING BALANCE INCLUDED AS DEBIT */
+          UNION ALL SELECT ref_no AS customer_code, amount FROM customer_payments WHERE ref_no = ANY($1) AND type='opening_balance' AND is_deleted=false
         ),
         all_credits AS (
-          SELECT ref_no AS customer_code, amount FROM customer_payments WHERE ref_no = ANY($1) AND type != 'opening_balance'
+          SELECT ref_no AS customer_code, amount FROM customer_payments WHERE ref_no = ANY($1) AND type != 'opening_balance' AND is_deleted=false
         ),
         customer_names AS (
           SELECT DISTINCT ON (customer_code) customer_code, customer_name
@@ -106,6 +107,8 @@ router.get("/", async (req, res) => {
             SELECT customer_code, customer_name FROM bookings WHERE customer_code = ANY($1) AND customer_name IS NOT NULL AND customer_name != '' AND is_deleted=false
             UNION ALL SELECT customer_code, customer_name FROM hotels WHERE customer_code = ANY($1) AND customer_name IS NOT NULL AND customer_name != '' AND is_deleted=false
             UNION ALL SELECT customer_code, customer_name FROM visa WHERE customer_code = ANY($1) AND customer_name IS NOT NULL AND customer_name != '' AND is_deleted=false
+            UNION ALL SELECT customer_code, customer_name FROM ticketing WHERE customer_code = ANY($1) AND customer_name IS NOT NULL AND customer_name != '' AND is_deleted=false
+            UNION ALL SELECT customer_code, customer_name FROM transport WHERE customer_code = ANY($1) AND customer_name IS NOT NULL AND customer_name != '' AND is_deleted=false
           ) n
         )
         SELECT 
@@ -114,11 +117,12 @@ router.get("/", async (req, res) => {
           COALESCE(d.total_debit, 0) AS sales,
           COALESCE(p.total_credit, 0) AS paid
         FROM (
-          SELECT customer_code FROM all_debits UNION SELECT customer_code FROM all_credits
+          SELECT unnest($1::text[]) AS customer_code
         ) a
         LEFT JOIN (SELECT customer_code, SUM(amount) AS total_debit FROM all_debits GROUP BY customer_code) d ON a.customer_code = d.customer_code
         LEFT JOIN (SELECT customer_code, SUM(amount) AS total_credit FROM all_credits GROUP BY customer_code) p ON a.customer_code = p.customer_code
         LEFT JOIN customer_names n ON a.customer_code = n.customer_code
+        WHERE COALESCE(d.total_debit, 0) > 0 OR COALESCE(p.total_credit, 0) > 0
       `, [regCodes]);
 
       registeredRows = regSalesAndPayments.rows.map(r => {
@@ -139,7 +143,7 @@ router.get("/", async (req, res) => {
       });
     }
 
-    /* ========== 4. SUPPLIERS SECTIONS ========== */
+    /* ========== 4. SUPPLIERS SECTIONS (WITH LIVE OPENING BALANCES INCLUDED) ========== */
     const supplierSnapshot = await db.query(`
       SELECT code, balance FROM archive_balances WHERE snapshot_id=$1 AND balance_type='SUPPLIER'
     `, [snapshotId]);
@@ -149,26 +153,44 @@ router.get("/", async (req, res) => {
     `, [snapshotDate]);
 
     const paymentTotals = await db.query(`
-      SELECT s.supplier_code, COALESCE(SUM(sp.amount),0) AS paid FROM suppliers s LEFT JOIN supplier_payments sp ON sp.supplier_id = s.id AND ($1::date IS NULL OR sp.payment_date > $1) WHERE s.is_deleted = false GROUP BY s.supplier_code
+      SELECT 
+        s.supplier_code, 
+        COALESCE(SUM(CASE WHEN sp.type = 'opening_balance' THEN sp.amount ELSE 0 END), 0) AS live_opening_balance,
+        COALESCE(SUM(CASE WHEN sp.type != 'opening_balance' THEN sp.amount ELSE 0 END), 0) AS paid 
+      FROM suppliers s 
+      LEFT JOIN supplier_payments sp ON sp.supplier_id = s.id AND ($1::date IS NULL OR sp.payment_date > $1) 
+      WHERE s.is_deleted = false 
+      GROUP BY s.supplier_code
     `, [snapshotDate]);
 
     const suppliersData = await db.query(`SELECT supplier_code, supplier_name FROM suppliers WHERE is_deleted = false`);
 
     const suppliers = suppliersData.rows.map(s => {
+      const pData = paymentTotals.rows.find(p => p.supplier_code === s.supplier_code);
       const purchase = Number(purchaseTotals.rows.find(p => p.supplier_code === s.supplier_code)?.purchase_total || 0);
-      const paid = Number(paymentTotals.rows.find(p => p.supplier_code === s.supplier_code)?.paid || 0);
-      const openingBalance = Number(supplierSnapshot.rows.find(x => x.code === s.supplier_code)?.balance || 0);
-      const balance = openingBalance + purchase - paid;
+      const paid = Number(pData?.paid || 0);
+      const liveOB = Number(pData?.live_opening_balance || 0);
+      const snapshotOB = Number(supplierSnapshot.rows.find(x => x.code === s.supplier_code)?.balance || 0);
+
+      const totalPurchase = purchase + liveOB + snapshotOB;
+      const balance = totalPurchase - paid;
 
       let status = "PENDING";
       if (balance < 0) status = "EXTRA PAID";
       else if (balance === 0) status = "PAID";
       else if (paid > 0) status = "PARTIAL";
 
-      return { supplier_code: s.supplier_code, supplier_name: s.supplier_name, purchase_total: purchase, paid, balance, status };
+      return { 
+        supplier_code: s.supplier_code, 
+        supplier_name: s.supplier_name, 
+        purchase_total: totalPurchase, 
+        paid, 
+        balance, 
+        status 
+      };
     }).sort((a, b) => Math.abs(b.balance) - Math.abs(a.balance));
 
-    /* ========== 5. SUMMARY CALCULATION (INCLUDING ALL) ========== */
+    /* ========== 5. SUMMARY CALCULATION ========== */
     const totalRegReceivable = registeredRows.filter(r => r.balance > 0).reduce((a, r) => a + r.balance, 0);
     const totalStdReceivable = standardCustomerRows.filter(r => r.balance > 0).reduce((a, r) => a + r.balance, 0);
     const totalRegExtra = registeredRows.filter(r => r.balance < 0).reduce((a, r) => a + Math.abs(r.balance), 0);

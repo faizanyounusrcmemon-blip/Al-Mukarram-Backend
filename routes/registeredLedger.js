@@ -3,8 +3,8 @@ const router = express.Router();
 const db = require("../db");
 
 /* =====================================================
-   HELPERS: CUSTOMER TOTAL SALES (DEBIT VALUES)
-   Strictly using customer_code
+   HELPERS: CUSTOMER TOTAL SALES & OPENING BALANCE (CREDIT)
+   Accounting Logic: Sale / Opening Balance -> Credit (+)
 ===================================================== */
 async function getRegCustomerSale(customer_code) {
   const sale = await db.query(
@@ -44,8 +44,8 @@ async function getRegCustomerSale(customer_code) {
 }
 
 /* =====================================================
-   HELPERS: CUSTOMER TOTAL PAYMENTS (CREDIT VALUES ONLY)
-   Excluding 'opening_balance' since it is treated as a Debit
+   HELPERS: CUSTOMER TOTAL PAYMENTS (DEBIT)
+   Accounting Logic: Customer Payment -> Debit (-)
 ===================================================== */
 async function getRegCustomerPayments(customer_code) {
   const paid = await db.query(
@@ -60,13 +60,14 @@ async function getRegCustomerPayments(customer_code) {
 }
 
 /* =====================================================
-   1. REGISTERED LEDGER DETAIL (LOOKUP BY STRICT CUSTOMER_CODE ONLY)
+   1. REGISTERED LEDGER DETAIL (STRICT CUSTOMER_CODE LOOKUP)
 ===================================================== */
 router.get("/detail/:customer_code", async (req, res) => {
   try {
     const { customer_code } = req.params;
     const { startDate, endDate } = req.query;
 
+    let balance = 0;
     let customerName = "Registered Customer";
 
     // Dynamic customer name lookup
@@ -140,59 +141,59 @@ router.get("/detail/:customer_code", async (req, res) => {
 
     let allEntries = [];
 
-    // Map Sales (DEBIT) - Lene Hain
+    // Map Sales -> Credit (+)
     salesRes.rows.forEach(s => {
-      const amt = Math.round(Math.abs(parseFloat(s.total_pkr || 0)));
+      const amt = Math.round(Number(s.total_pkr || 0));
       allEntries.push({
         id: `SALE-${s.ref_no}`,
         date: s.booking_date,
         description: `Sale Invoice (${s.src}) - Ref: ${s.ref_no}`,
-        debit: amt,  
-        credit: 0,
+        debit: 0,
+        credit: amt,
         type: "sale"
       });
     });
 
     // Map Payments & Opening Balances
     paymentsRes.rows.forEach(p => {
-      const amt = Math.round(Math.abs(parseFloat(p.amount || 0)));
+      const amt = Math.round(Number(p.amount || 0));
       let methodDesc = p.payment_method || "";
       if (p.payment_method?.toLowerCase() === "bank" && p.bank_name) {
         methodDesc = `Bank: ${p.bank_name}`;
       }
 
       if (p.type === "opening_balance") {
+        // Opening Balance -> Credit (+)
         allEntries.push({
           id: p.id,
           date: p.payment_date,
-          description: `🔑 Opening Balance (Debit Setup)`,
-          debit: amt,  // Opening balance is Receivable (Debit)
-          credit: 0,
+          description: `🔑 Opening Balance`,
+          debit: 0,
+          credit: amt,
           type: "opening_balance",
           bank_profile_id: p.bank_profile_id
         });
       } else {
+        // Customer Payment / Adjustment -> Debit (-)
         allEntries.push({
           id: p.id,
           date: p.payment_date,
           description: p.type === "adjustment" ? `Adjustment Receipt (${methodDesc})` : `Payment Received (${methodDesc})`,
-          debit: 0,
-          credit: amt, // Payments are Received (Credit)
+          debit: amt,
+          credit: 0,
           type: "payment",
           bank_profile_id: p.bank_profile_id
         });
       }
     });
 
-    // Chronological Sorting Fix
-    allEntries.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    // Sort entries chronologically by date
+    allEntries.sort((a, b) => new Date(a.date) - new Date(b.date));
 
-    let balance = 0;
     let filteredRows = [];
-
     allEntries.forEach(entry => {
-      // Balance Formula: Current Balance + Debit - Credit
-      balance = balance + Number(entry.debit) - Number(entry.credit);
+      // Balance Calculation: Credit (+) - Debit (-)
+      balance = balance + entry.credit - entry.debit;
       
       let matchDate = true;
       if (startDate && new Date(entry.date) < new Date(startDate)) matchDate = false;
@@ -241,6 +242,8 @@ router.get("/pending/list", async (req, res) => {
       SELECT customer_code FROM transport WHERE customer_code IS NOT NULL AND customer_code != '' AND is_deleted=false
       UNION
       SELECT customer_code FROM ziyarat WHERE customer_code IS NOT NULL AND customer_code != '' AND is_deleted=false
+      UNION
+      SELECT ref_no AS customer_code FROM customer_payments WHERE ref_no IS NOT NULL AND ref_no != ''
       `
     );
 
@@ -252,7 +255,7 @@ router.get("/pending/list", async (req, res) => {
 
     const result = await db.query(
       `
-      WITH all_debits AS (
+      WITH all_credits AS (
         SELECT customer_code, total_pkr AS amount FROM bookings WHERE customer_code = ANY($1) AND is_deleted=false
         UNION ALL
         SELECT customer_code, total_pkr FROM hotels WHERE customer_code = ANY($1) AND is_deleted=false
@@ -272,7 +275,7 @@ router.get("/pending/list", async (req, res) => {
         SELECT ref_no AS customer_code, amount FROM customer_payments WHERE ref_no = ANY($1) AND type='opening_balance'
       ),
       
-      all_credits AS (
+      all_debits AS (
         SELECT ref_no AS customer_code, amount FROM customer_payments WHERE ref_no = ANY($1) AND type != 'opening_balance'
       ),
 
@@ -300,15 +303,15 @@ router.get("/pending/list", async (req, res) => {
       aggregated AS (
         SELECT 
           c.customer_code,
-          COALESCE(d.total_debit, 0) AS total_sale,
-          COALESCE(p.total_credit, 0) AS total_paid
+          COALESCE(cr.total_credit, 0) AS total_sale,
+          COALESCE(db.total_debit, 0) AS total_paid
         FROM (
-          SELECT customer_code FROM all_debits
-          UNION
           SELECT customer_code FROM all_credits
+          UNION
+          SELECT customer_code FROM all_debits
         ) c
-        LEFT JOIN (SELECT customer_code, SUM(amount) AS total_debit FROM all_debits GROUP BY customer_code) d ON c.customer_code = d.customer_code
-        LEFT JOIN (SELECT customer_code, SUM(amount) AS total_credit FROM all_credits GROUP BY customer_code) p ON c.customer_code = p.customer_code
+        LEFT JOIN (SELECT customer_code, SUM(amount) AS total_credit FROM all_credits GROUP BY customer_code) cr ON c.customer_code = cr.customer_code
+        LEFT JOIN (SELECT customer_code, SUM(amount) AS total_debit FROM all_debits GROUP BY customer_code) db ON c.customer_code = db.customer_code
       )
 
       SELECT 
@@ -363,6 +366,7 @@ router.post("/payment", async (req, res) => {
 
     await client.query("BEGIN");
     
+    // Save customer payment entry
     await client.query(
       `
       INSERT INTO customer_payments (ref_no, amount, payment_method, bank_profile_id, type, payment_date)
@@ -370,13 +374,32 @@ router.post("/payment", async (req, res) => {
       `,
       [
         customer_code, 
-        Math.abs(parseFloat(amount)), 
+        amount, 
         payment_method || "Cash", 
         payment_method === "Bank" ? bank_profile_id : null,
         type || "payment", 
         payment_date
       ]
     );
+
+    // Dynamic insertion to Bank Ledger only if method is Bank AND type is NOT opening_balance
+    if (payment_method === "Bank" && bank_profile_id && type !== "opening_balance") {
+      await client.query(
+        `
+        INSERT INTO bank_transactions (bank_profile_id, date, description, debit, credit, ref_no)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        `,
+        [
+          bank_profile_id,
+          payment_date,
+          `Customer Payment Received (${customer_code})`,
+          amount, // Bank receives funds -> Debit (+)
+          0,
+          customer_code
+        ]
+      );
+    }
+
     await client.query("COMMIT");
 
     res.json({ success: true, message: "Transaction saved successfully!" });
@@ -456,7 +479,7 @@ router.put("/edit/:id", async (req, res) => {
       WHERE id = $6
       `,
       [
-        Math.abs(parseFloat(amount)), 
+        amount, 
         payment_date, 
         payment_method || "Bank", 
         payment_method === "Bank" ? bank_profile_id : null,

@@ -50,45 +50,47 @@ router.get("/pending", async (req, res) => {
         SELECT code, balance
         FROM archive_balances
         WHERE snapshot_id = $1 AND balance_type='SUPPLIER'
+      ),
+
+      calculated_suppliers AS (
+        SELECT
+          s.supplier_code,
+          s.supplier_name,
+          (
+            COALESCE(sb.balance, 0) +
+            COALESCE(pt.total_purchase, 0) +
+            COALESCE(ptot.live_opening_balance, 0)
+          ) AS total_purchase,
+          COALESCE(ptot.total_paid, 0) AS total_paid,
+          (
+            COALESCE(sb.balance, 0) +
+            COALESCE(pt.total_purchase, 0) +
+            COALESCE(ptot.live_opening_balance, 0) -
+            COALESCE(ptot.total_paid, 0)
+          ) AS pending_amount
+        FROM suppliers s
+        LEFT JOIN purchase_totals pt ON pt.supplier_code = s.supplier_code
+        LEFT JOIN payment_totals ptot ON ptot.supplier_code = s.supplier_code
+        LEFT JOIN snapshot_balances sb ON sb.code = s.supplier_code
+        WHERE s.is_deleted = false
       )
 
       SELECT
-        s.supplier_code,
-        s.supplier_name,
-        (
-          COALESCE(sb.balance, 0) +
-          COALESCE(pt.total_purchase, 0) +
-          COALESCE(ptot.live_opening_balance, 0)
-        ) AS total_purchase,
-        COALESCE(ptot.total_paid, 0) AS total_paid,
-        (
-          COALESCE(sb.balance, 0) +
-          COALESCE(pt.total_purchase, 0) +
-          COALESCE(ptot.live_opening_balance, 0) -
-          COALESCE(ptot.total_paid, 0)
-        ) AS pending_amount,
+        supplier_code,
+        supplier_name,
+        total_purchase,
+        total_paid,
+        pending_amount,
         CASE
-          WHEN (
-            COALESCE(sb.balance, 0) +
-            COALESCE(pt.total_purchase, 0) +
-            COALESCE(ptot.live_opening_balance, 0) -
-            COALESCE(ptot.total_paid, 0)
-          ) < -0.5 THEN 'EXTRA PAID'
-          WHEN ABS(
-            COALESCE(sb.balance, 0) +
-            COALESCE(pt.total_purchase, 0) +
-            COALESCE(ptot.live_opening_balance, 0) -
-            COALESCE(ptot.total_paid, 0)
-          ) <= 0.5 THEN 'PAID'
-          WHEN COALESCE(ptot.total_paid, 0) > 0 THEN 'PARTIAL'
+          WHEN pending_amount < -0.5 THEN 'EXTRA PAID'
+          WHEN ABS(pending_amount) <= 0.5 THEN 'PAID'
+          WHEN total_paid > 0 THEN 'PARTIAL'
           ELSE 'PENDING'
         END AS status
-      FROM suppliers s
-      LEFT JOIN purchase_totals pt ON pt.supplier_code = s.supplier_code
-      LEFT JOIN payment_totals ptot ON ptot.supplier_code = s.supplier_code
-      LEFT JOIN snapshot_balances sb ON sb.code = s.supplier_code
-      WHERE s.is_deleted = false
-      ORDER BY pending_amount DESC, s.supplier_name
+      FROM calculated_suppliers
+      -- ✨ FILTER OUT ZERO BALANCE: Sirf wahi ayenge jin ka balance exact 0 na ho
+      WHERE ABS(pending_amount) > 0.5
+      ORDER BY pending_amount DESC, supplier_name
     `, [snapshotId, snapshotDate]);
 
     res.json({
