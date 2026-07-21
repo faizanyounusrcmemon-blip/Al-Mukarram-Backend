@@ -360,7 +360,6 @@ router.get("/pending/list", async (req, res) => {
    3. SAVE REGISTERED CUSTOMER PAYMENT / OPENING BALANCE
 ===================================================== */
 router.post("/payment", async (req, res) => {
-  const client = await db.connect();
   try {
     const { customer_code, amount, payment_method, bank_profile_id, type, payment_date } = req.body;
 
@@ -368,10 +367,8 @@ router.post("/payment", async (req, res) => {
     if (!amount || Number(amount) <= 0) return res.json({ success: false, error: "Amount must be greater than zero" });
     if (!payment_date) return res.json({ success: false, error: "Payment Date is required" });
 
-    await client.query("BEGIN");
-    
-    // Save customer payment entry
-    await client.query(
+    // Sirf Customer Payment Save Hogi (Bank Table me nahi jayegi)
+    await db.query(
       `
       INSERT INTO customer_payments (ref_no, amount, payment_method, bank_profile_id, type, payment_date)
       VALUES ($1, $2, $3, $4, $5, $6)
@@ -386,32 +383,10 @@ router.post("/payment", async (req, res) => {
       ]
     );
 
-    // Dynamic insertion to Bank Ledger only if method is Bank AND type is NOT opening_balance
-    if (payment_method === "Bank" && bank_profile_id && type !== "opening_balance") {
-      await client.query(
-        `
-        INSERT INTO bank_transactions (bank_profile_id, date, description, debit, credit, ref_no)
-        VALUES ($1, $2, $3, $4, $5, $6)
-        `,
-        [
-          bank_profile_id,
-          payment_date,
-          `Customer Payment Received (${customer_code})`,
-          amount, // Bank receives funds -> Debit (+)
-          0,
-          customer_code
-        ]
-      );
-    }
-
-    await client.query("COMMIT");
-
     res.json({ success: true, message: "Transaction saved successfully!" });
   } catch (err) {
-    await client.query("ROLLBACK");
+    console.error("Payment Save Error:", err);
     res.json({ success: false, error: err.message });
-  } finally {
-    client.release();
   }
 });
 
