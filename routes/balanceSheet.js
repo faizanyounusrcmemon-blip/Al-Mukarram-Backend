@@ -82,7 +82,7 @@ router.get("/", async (req, res) => {
       };
     });
 
-    /* ========== 3. REGISTERED CUSTOMERS BALANCES (WITH OPENING BALANCE INCLUDED) ========== */
+/* ========== 3. REGISTERED CUSTOMERS BALANCES (WITH OPENING BALANCE INCLUDED) ========== */
     let registeredRows = [];
     if (regCodes.length > 0) {
       const regSalesAndPayments = await db.query(`
@@ -95,7 +95,6 @@ router.get("/", async (req, res) => {
           UNION ALL SELECT customer_code, total_pkr FROM ticketing WHERE customer_code = ANY($1) AND is_deleted=false
           UNION ALL SELECT customer_code, total_pkr FROM transport WHERE customer_code = ANY($1) AND is_deleted=false
           UNION ALL SELECT customer_code, total_pkr FROM ziyarat WHERE customer_code = ANY($1) AND is_deleted=false
-          /* ✨ OPENING BALANCE INCLUDED AS DEBIT */
           UNION ALL SELECT ref_no AS customer_code, amount FROM customer_payments WHERE ref_no = ANY($1) AND type='opening_balance' AND is_deleted=false
         ),
         all_credits AS (
@@ -107,8 +106,13 @@ router.get("/", async (req, res) => {
             SELECT customer_code, customer_name FROM bookings WHERE customer_code = ANY($1) AND customer_name IS NOT NULL AND customer_name != '' AND is_deleted=false
             UNION ALL SELECT customer_code, customer_name FROM hotels WHERE customer_code = ANY($1) AND customer_name IS NOT NULL AND customer_name != '' AND is_deleted=false
             UNION ALL SELECT customer_code, customer_name FROM visa WHERE customer_code = ANY($1) AND customer_name IS NOT NULL AND customer_name != '' AND is_deleted=false
+            UNION ALL SELECT customer_code, customer_name FROM card WHERE customer_code = ANY($1) AND customer_name IS NOT NULL AND customer_name != '' AND is_deleted=false
+            UNION ALL SELECT customer_code, customer_name FROM groups WHERE customer_code = ANY($1) AND customer_name IS NOT NULL AND customer_name != '' AND is_deleted=false
             UNION ALL SELECT customer_code, customer_name FROM ticketing WHERE customer_code = ANY($1) AND customer_name IS NOT NULL AND customer_name != '' AND is_deleted=false
             UNION ALL SELECT customer_code, customer_name FROM transport WHERE customer_code = ANY($1) AND customer_name IS NOT NULL AND customer_name != '' AND is_deleted=false
+            UNION ALL SELECT customer_code, customer_name FROM ziyarat WHERE customer_code = ANY($1) AND customer_name IS NOT NULL AND customer_name != '' AND is_deleted=false
+            /* ✨ Safe Lookup: Check 'customers' table if exists */
+            UNION ALL SELECT customer_code, name AS customer_name FROM customers WHERE customer_code = ANY($1) AND name IS NOT NULL AND name != ''
           ) n
         )
         SELECT 
