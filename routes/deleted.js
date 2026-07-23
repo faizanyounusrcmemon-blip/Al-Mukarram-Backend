@@ -104,7 +104,7 @@ router.get("/list", async (req, res) => {
 });
 
 /* =====================================================
-   ♻ RESTORE RECORD ROUTE (DYNAMIC DB PASSWORD)
+   ♻ RESTORE RECORD ROUTE (WITH PURCHASE CHECK)
 ===================================================== */
 router.post("/restore", async (req, res) => {
   try {
@@ -114,7 +114,7 @@ router.post("/restore", async (req, res) => {
       return res.json({ success: false, error: "Password required" });
     }
 
-    // 🔍 DB Lookup for Restore Password
+    // 🔑 DB Lookup for Restore Password
     const passCheck = await db.query(
       "SELECT password_val FROM public.system_passwords WHERE key_name = 'restore_report_pass'"
     );
@@ -125,6 +125,23 @@ router.post("/restore", async (req, res) => {
 
     if (password !== passCheck.rows[0].password_val) {
       return res.json({ success: false, error: "Invalid password" });
+    }
+
+    // ---------------------------------------------------------
+    // 🔍 PURCHASE SPECIFIC CHECK: Duplicate Active Purchase Check
+    // ---------------------------------------------------------
+    if (type === "PURCHASE") {
+      const activeCheck = await db.query(
+        `SELECT id FROM purchase_entries WHERE ref_no = $1 AND is_deleted = false LIMIT 1`,
+        [ref_no]
+      );
+
+      if (activeCheck.rows.length > 0) {
+        return res.json({
+          success: false,
+          error: `Ref No (${ref_no}) ki purchase pehle se active mojood hai. Duplicate restore allow nahi hai!`
+        });
+      }
     }
 
     let table = "";
