@@ -29,6 +29,7 @@ const TMP = "/tmp";
 
 /* ================= TABLES ================= */
 const TABLES = [
+  "banks"
   "bookings",
   "expense_ledger",
   "hotels",
@@ -622,6 +623,7 @@ router.post("/fix-sequences", async (req, res) => {
     }
 
     const tables = [
+      "banks"
       "bookings",
       "expense_ledger",
       "hotels",
