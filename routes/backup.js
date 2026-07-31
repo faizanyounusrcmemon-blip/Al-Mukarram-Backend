@@ -29,7 +29,7 @@ const TMP = "/tmp";
 
 /* ================= TABLES ================= */
 const TABLES = [
-  "banks"
+  "banks",
   "bookings",
   "expense_ledger",
   "hotels",
@@ -447,89 +447,45 @@ router.post("/cleanup", async (req, res) => {
   }
 });
 
-/* ================= FULL RESTORE (FIXED FOR EMPTY TABLES) ================= */
-router.post("/restore/full", async (req, res) => {
-  const isMatched = await verifySystemPassword('backup_action_pass', req.body.password);
-  if (!isMatched) {
-    return res.json({ success: false, error: "Wrong password" });
-  }
-
-  const client = await db.connect();
+/* ================= UPLOAD FULL ZIP RESTORE ================= */
+router.post("/restore/upload/full", upload.single("backup"), async (req, res) => {
   try {
-    const zipData = await supabase.storage.from(BUCKET).download(req.body.file);
-    const zip = new AdmZip(Buffer.from(await zipData.data.arrayBuffer()));
+    const { password } = req.body;
 
-    await client.query("BEGIN");
-
-    for (const table of TABLES) {
-      console.log("RESTORING TABLE:", table);
-      const entry = zip.getEntry(`${table}.csv`);
-      
-      if (!entry) {
-        console.log("NOT FOUND IN ZIP:", table);
-        continue;
-      }
-      
-      await restoreTable(client, table, entry.getData().toString("utf8"));
-      console.log("SUCCESSFULLY RESTORED:", table);
+    const isMatched = await verifySystemPassword('backup_action_pass', password);
+    if (!isMatched) {
+      return res.json({ success: false, error: "Wrong password" });
     }
 
-    console.log("SYNCHRONIZING SEQUENCES AFTER FULL RESTORE...");
-    
-    // 1. Safe Booking Sequence Sync
-    await client.query(`
-      DO $$ 
-      DECLARE 
-        max_val INT;
-      BEGIN
-        IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname='booking_ref_seq') THEN
-          CREATE SEQUENCE booking_ref_seq;
-        END IF;
+    if (!req.file) return res.json({ success: false, error: "No file uploaded" });
 
-        SELECT MAX(CAST(NULLIF(regexp_replace(ref_no, '[^0-9]', '', 'g'), '') AS INTEGER)) 
-        INTO max_val
-        FROM bookings WHERE ref_no IS NOT NULL AND ref_no <> '';
+    const zip = new AdmZip(req.file.buffer);
+    const client = await db.connect();
 
-        IF max_val IS NOT NULL AND max_val > 0 THEN
-          PERFORM setval('booking_ref_seq', max_val, true);
-        ELSE
-          PERFORM setval('booking_ref_seq', 1, false);
-        END IF;
-      END $$;
-    `);
+    try {
+      await client.query("BEGIN");
 
-    // 2. Safe Supplier Sequence Sync
-    await client.query(`
-      DO $$ 
-      DECLARE 
-        max_val INT;
-      BEGIN
-        IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname='suppliers_code_seq') THEN
-          CREATE SEQUENCE suppliers_code_seq;
-        END IF;
+      for (const table of TABLES) {
+        const entry = zip.getEntry(`${table}.csv`);
+        if (!entry) continue;
 
-        SELECT MAX(CAST(NULLIF(regexp_replace(supplier_code, '[^0-9]', '', 'g'), '') AS INTEGER)) 
-        INTO max_val
-        FROM suppliers WHERE supplier_code IS NOT NULL AND supplier_code <> '';
+        await restoreTable(
+          client,
+          table,
+          entry.getData().toString("utf8")
+        );
+      }
 
-        IF max_val IS NOT NULL AND max_val > 0 THEN
-          PERFORM setval('suppliers_code_seq', max_val, true);
-        ELSE
-          PERFORM setval('suppliers_code_seq', 1, false);
-        END IF;
-      END $$;
-    `);
-
-    await client.query("COMMIT");
-    console.log("FULL RESTORE COMPLETED SUCCESSFULLY!");
-    
-    res.json({ success: true, progress: 100 });
+      await client.query("COMMIT");
+      res.json({ success: true });
+    } catch (e) {
+      await client.query("ROLLBACK");
+      res.json({ success: false, error: e.message });
+    } finally {
+      client.release();
+    }
   } catch (e) {
-    await client.query("ROLLBACK");
-    console.error("CRITICAL RESTORE ERROR DETECTED:", e.message);
     res.json({ success: false, error: e.message });
-  } finally {
-    client.release();
   }
 });
 
@@ -612,7 +568,7 @@ router.post("/restore/csv", upload.single("csv"), async (req, res) => {
   }
 });
 
-/* ================= FIX ALL SEQUENCES (SAFE FOR EMPTY TABLES) ================= */
+/* ================= FIX ALL SEQUENCES ================= */
 router.post("/fix-sequences", async (req, res) => {
   try {
     const { password } = req.body;
@@ -623,7 +579,7 @@ router.post("/fix-sequences", async (req, res) => {
     }
 
     const tables = [
-      "banks"
+      "banks",
       "bookings",
       "expense_ledger",
       "hotels",
@@ -650,7 +606,6 @@ router.post("/fix-sequences", async (req, res) => {
       "system_passwords",
     ];
 
-    // Primary Key (id) Sequences Fix
     for (const table of tables) {
       const seq = await db.query(`
         SELECT pg_get_serial_sequence(
@@ -665,46 +620,125 @@ router.post("/fix-sequences", async (req, res) => {
       await db.query(`
         SELECT setval(
           '${sequenceName}',
-          COALESCE((SELECT MAX(id) FROM ${table}), 1),
-          (SELECT COUNT(*) > 0 FROM ${table})
+          COALESCE(
+            (
+              SELECT MAX(id)
+              FROM ${table}
+            ),
+            1
+          )
         );
       `);
     }
 
-    // Custom Helper Function to Safely Set Sequences for Empty / Non-Empty Tables
-    const safeSetval = async (seqName, tableName, column, prefix) => {
-      await db.query(`
-        DO $$ BEGIN
-          IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname='${seqName}') THEN
-            CREATE SEQUENCE ${seqName};
-          END IF;
-        END $$;
-      `);
+    // VISA SEQUENCE
+    await db.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname='visa_ref_seq') THEN
+          CREATE SEQUENCE visa_ref_seq;
+        END IF;
+      END $$;
+    `);
+    await db.query(`
+      SELECT setval(
+        'visa_ref_seq',
+        COALESCE(
+          (SELECT MAX(CAST(REPLACE(ref_no, 'VISA-', '') AS INTEGER)) FROM visa),
+          0
+        )
+      );
+    `);
 
-      const resVal = await db.query(`
-        SELECT MAX(CAST(NULLIF(regexp_replace(${column}, '[^0-9]', '', 'g'), '') AS INTEGER)) as max_val 
-        FROM ${tableName} 
-        WHERE ${column} IS NOT NULL AND ${column} <> '';
-      `);
+    // CARD SEQUENCE
+    await db.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname='card_ref_seq') THEN
+          CREATE SEQUENCE card_ref_seq;
+        END IF;
+      END $$;
+    `);
+    await db.query(`
+      SELECT setval(
+        'card_ref_seq',
+        COALESCE(
+          (SELECT MAX(CAST(REPLACE(ref_no, 'CARD-', '') AS INTEGER)) FROM card),
+          0
+        )
+      );
+    `);
 
-      const maxVal = resVal.rows[0]?.max_val;
+    // GROUP SEQUENCE
+    await db.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname='groups_ref_seq') THEN
+          CREATE SEQUENCE groups_ref_seq;
+        END IF;
+      END $$;
+    `);
+    await db.query(`
+      SELECT setval(
+        'groups_ref_seq',
+        COALESCE(
+          (SELECT MAX(CAST(REPLACE(ref_no, 'GRP-', '') AS INTEGER)) FROM groups),
+          0
+        )
+      );
+    `);
 
-      if (maxVal && maxVal > 0) {
-        // Table me records hain, sequence ko max value par set karein (is_called = true)
-        await db.query(`SELECT setval('${seqName}', ${maxVal}, true);`);
-      } else {
-        // Table empty hai, sequence ko 1 par set karein aur is_called = false rakhein taake pehla ID 1 bane
-        await db.query(`SELECT setval('${seqName}', 1, false);`);
-      }
-    };
+    // BOOKING SEQUENCE
+    await db.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname='booking_ref_seq') THEN
+          CREATE SEQUENCE booking_ref_seq;
+        END IF;
+      END $$;
+    `);
+    await db.query(`
+      SELECT setval(
+        'booking_ref_seq',
+        COALESCE(
+          (SELECT MAX(CAST(REPLACE(ref_no, 'PKG-', '') AS INTEGER)) FROM bookings),
+          0
+        )
+      );
+    `);
 
-    // Custom Sequences Fix
-    await safeSetval('visa_ref_seq', 'visa', 'ref_no', 'VISA-');
-    await safeSetval('card_ref_seq', 'card', 'ref_no', 'CARD-');
-    await safeSetval('groups_ref_seq', 'groups', 'ref_no', 'GRP-');
-    await safeSetval('booking_ref_seq', 'bookings', 'ref_no', 'PKG-');
-    await safeSetval('suppliers_code_seq', 'suppliers', 'supplier_code', 'SUP-');
-    await safeSetval('customers_code_seq', 'customers', 'customer_code', 'CUST-');
+    // SUPPLIER CODE SEQUENCE
+    await db.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname='suppliers_code_seq') THEN
+          CREATE SEQUENCE suppliers_code_seq;
+        END IF;
+      END $$;
+    `);
+    await db.query(`
+      SELECT setval(
+        'suppliers_code_seq',
+        COALESCE(
+          (SELECT MAX(CAST(REPLACE(supplier_code, 'SUP-', '') AS INTEGER)) FROM suppliers),
+          0
+        )
+      );
+    `);
+
+    // CUSTOMER CODE SEQUENCE
+    await db.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname='customers_code_seq') THEN
+          CREATE SEQUENCE customers_code_seq;
+        END IF;
+      END $$;
+    `);
+    await db.query(`
+      SELECT setval(
+        'customers_code_seq',
+        COALESCE(
+          (SELECT MAX(CAST(REPLACE(customer_code, 'CUST-', '') AS INTEGER)) FROM customers),
+          0
+        )
+      );
+    `);
+
 
     return res.json({
       success: true,
