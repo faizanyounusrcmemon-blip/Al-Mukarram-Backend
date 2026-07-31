@@ -29,7 +29,6 @@ const TMP = "/tmp";
 
 /* ================= TABLES ================= */
 const TABLES = [
-  "banks",
   "bookings",
   "expense_ledger",
   "hotels",
@@ -217,7 +216,7 @@ async function restoreTable(client, table, csv) {
   }
 }
 
-/* ================= FULL RESTORE (FIXED FOR EMPTY TABLES) ================= */
+/* ================= FULL RESTORE ================= */
 router.post("/restore/full", async (req, res) => {
   const isMatched = await verifySystemPassword('backup_action_pass', req.body.password);
   if (!isMatched) {
@@ -248,46 +247,32 @@ router.post("/restore/full", async (req, res) => {
     
     // 1. Safe Booking Sequence Sync
     await client.query(`
-      DO $$ 
-      DECLARE 
-        max_val INT;
-      BEGIN
+      DO $$ BEGIN
         IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname='booking_ref_seq') THEN
           CREATE SEQUENCE booking_ref_seq;
         END IF;
-
-        SELECT MAX(CAST(NULLIF(regexp_replace(ref_no, '[^0-9]', '', 'g'), '') AS INTEGER)) 
-        INTO max_val
-        FROM bookings WHERE ref_no IS NOT NULL AND ref_no <> '';
-
-        IF max_val IS NOT NULL AND max_val > 0 THEN
-          PERFORM setval('booking_ref_seq', max_val, true);
-        ELSE
-          PERFORM setval('booking_ref_seq', 1, false);
-        END IF;
       END $$;
+    `);
+    await client.query(`
+      SELECT setval('booking_ref_seq', COALESCE((
+        SELECT MAX(CAST(NULLIF(regexp_replace(ref_no, '[^0-9]', '', 'g'), '') AS INTEGER))
+        FROM bookings WHERE ref_no IS NOT NULL AND ref_no <> ''
+      ), 0));
     `);
 
     // 2. Safe Supplier Sequence Sync
     await client.query(`
-      DO $$ 
-      DECLARE 
-        max_val INT;
-      BEGIN
+      DO $$ BEGIN
         IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname='suppliers_code_seq') THEN
           CREATE SEQUENCE suppliers_code_seq;
         END IF;
-
-        SELECT MAX(CAST(NULLIF(regexp_replace(supplier_code, '[^0-9]', '', 'g'), '') AS INTEGER)) 
-        INTO max_val
-        FROM suppliers WHERE supplier_code IS NOT NULL AND supplier_code <> '';
-
-        IF max_val IS NOT NULL AND max_val > 0 THEN
-          PERFORM setval('suppliers_code_seq', max_val, true);
-        ELSE
-          PERFORM setval('suppliers_code_seq', 1, false);
-        END IF;
       END $$;
+    `);
+    await client.query(`
+      SELECT setval('suppliers_code_seq', COALESCE((
+        SELECT MAX(CAST(NULLIF(regexp_replace(supplier_code, '[^0-9]', '', 'g'), '') AS INTEGER))
+        FROM suppliers WHERE supplier_code IS NOT NULL AND supplier_code <> ''
+      ), 0));
     `);
 
     await client.query("COMMIT");
@@ -461,45 +446,89 @@ router.post("/cleanup", async (req, res) => {
   }
 });
 
-/* ================= UPLOAD FULL ZIP RESTORE ================= */
-router.post("/restore/upload/full", upload.single("backup"), async (req, res) => {
+/* ================= FULL RESTORE (FIXED FOR EMPTY TABLES) ================= */
+router.post("/restore/full", async (req, res) => {
+  const isMatched = await verifySystemPassword('backup_action_pass', req.body.password);
+  if (!isMatched) {
+    return res.json({ success: false, error: "Wrong password" });
+  }
+
+  const client = await db.connect();
   try {
-    const { password } = req.body;
+    const zipData = await supabase.storage.from(BUCKET).download(req.body.file);
+    const zip = new AdmZip(Buffer.from(await zipData.data.arrayBuffer()));
 
-    const isMatched = await verifySystemPassword('backup_action_pass', password);
-    if (!isMatched) {
-      return res.json({ success: false, error: "Wrong password" });
-    }
+    await client.query("BEGIN");
 
-    if (!req.file) return res.json({ success: false, error: "No file uploaded" });
-
-    const zip = new AdmZip(req.file.buffer);
-    const client = await db.connect();
-
-    try {
-      await client.query("BEGIN");
-
-      for (const table of TABLES) {
-        const entry = zip.getEntry(`${table}.csv`);
-        if (!entry) continue;
-
-        await restoreTable(
-          client,
-          table,
-          entry.getData().toString("utf8")
-        );
+    for (const table of TABLES) {
+      console.log("RESTORING TABLE:", table);
+      const entry = zip.getEntry(`${table}.csv`);
+      
+      if (!entry) {
+        console.log("NOT FOUND IN ZIP:", table);
+        continue;
       }
-
-      await client.query("COMMIT");
-      res.json({ success: true });
-    } catch (e) {
-      await client.query("ROLLBACK");
-      res.json({ success: false, error: e.message });
-    } finally {
-      client.release();
+      
+      await restoreTable(client, table, entry.getData().toString("utf8"));
+      console.log("SUCCESSFULLY RESTORED:", table);
     }
+
+    console.log("SYNCHRONIZING SEQUENCES AFTER FULL RESTORE...");
+    
+    // 1. Safe Booking Sequence Sync
+    await client.query(`
+      DO $$ 
+      DECLARE 
+        max_val INT;
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname='booking_ref_seq') THEN
+          CREATE SEQUENCE booking_ref_seq;
+        END IF;
+
+        SELECT MAX(CAST(NULLIF(regexp_replace(ref_no, '[^0-9]', '', 'g'), '') AS INTEGER)) 
+        INTO max_val
+        FROM bookings WHERE ref_no IS NOT NULL AND ref_no <> '';
+
+        IF max_val IS NOT NULL AND max_val > 0 THEN
+          PERFORM setval('booking_ref_seq', max_val, true);
+        ELSE
+          PERFORM setval('booking_ref_seq', 1, false);
+        END IF;
+      END $$;
+    `);
+
+    // 2. Safe Supplier Sequence Sync
+    await client.query(`
+      DO $$ 
+      DECLARE 
+        max_val INT;
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname='suppliers_code_seq') THEN
+          CREATE SEQUENCE suppliers_code_seq;
+        END IF;
+
+        SELECT MAX(CAST(NULLIF(regexp_replace(supplier_code, '[^0-9]', '', 'g'), '') AS INTEGER)) 
+        INTO max_val
+        FROM suppliers WHERE supplier_code IS NOT NULL AND supplier_code <> '';
+
+        IF max_val IS NOT NULL AND max_val > 0 THEN
+          PERFORM setval('suppliers_code_seq', max_val, true);
+        ELSE
+          PERFORM setval('suppliers_code_seq', 1, false);
+        END IF;
+      END $$;
+    `);
+
+    await client.query("COMMIT");
+    console.log("FULL RESTORE COMPLETED SUCCESSFULLY!");
+    
+    res.json({ success: true, progress: 100 });
   } catch (e) {
+    await client.query("ROLLBACK");
+    console.error("CRITICAL RESTORE ERROR DETECTED:", e.message);
     res.json({ success: false, error: e.message });
+  } finally {
+    client.release();
   }
 });
 
@@ -593,7 +622,6 @@ router.post("/fix-sequences", async (req, res) => {
     }
 
     const tables = [
-      "banks"
       "bookings",
       "expense_ledger",
       "hotels",
