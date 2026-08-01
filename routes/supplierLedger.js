@@ -154,7 +154,7 @@ router.delete("/delete/:entryId", async (req, res) => {
 });
 
 /* ====================================================
-   EDIT LEDGER ENTRY (WITH BANK_PROFILE_ID)
+   EDIT LEDGER ENTRY (FIXED TYPE UPDATE)
 ==================================================== */
 router.put("/edit/:entryId", async (req, res) => {
   try {
@@ -167,6 +167,11 @@ router.put("/edit/:entryId", async (req, res) => {
 
     if (!amount || amount <= 0) {
       return res.json({ success: false, error: "Invalid amount" });
+    }
+
+    // Type Check Validation
+    if (!type) {
+      return res.json({ success: false, error: "Type is required" });
     }
 
     const passCheck = await db.query(
@@ -191,9 +196,15 @@ router.put("/edit/:entryId", async (req, res) => {
       return res.json({ success: false, error: "Payment entry not found" });
     }
 
+    // COALESCE ensures if type is passed it updates, otherwise keeps old value
     await db.query(`
       UPDATE supplier_payments 
-      SET amount = $1, payment_date = $2, payment_method = $3, bank_profile_id = $4, type = $5
+      SET 
+        amount = $1, 
+        payment_date = $2, 
+        payment_method = $3, 
+        bank_profile_id = $4, 
+        type = COALESCE($5, type)
       WHERE id = $6
     `, [
       amount, 

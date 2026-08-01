@@ -418,7 +418,7 @@ router.post("/delete/:id", async (req, res) => {
 });
 
 /* =====================================================
-   5. EDIT PAYMENT / ENTRY (LOOKUP BY ID WITH PASSWORD)
+   5. EDIT PAYMENT / ENTRY (UPDATED TO HANDLE TYPE FITMENT)
 ===================================================== */
 router.put("/edit/:id", async (req, res) => {
   try {
@@ -460,7 +460,7 @@ router.put("/edit/:id", async (req, res) => {
       [
         amount, 
         payment_date, 
-        payment_method || "Bank", 
+        payment_method || "Cash", 
         payment_method === "Bank" ? bank_profile_id : null,
         type || "payment", 
         id
