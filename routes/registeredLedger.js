@@ -60,35 +60,56 @@ async function getRegCustomerPayments(customer_code) {
 }
 
 /* =====================================================
-   1. REGISTERED LEDGER DETAIL (STRICT CUSTOMER_CODE LOOKUP)
+   1. REGISTERED LEDGER DETAIL (WITH SNAPSHOT BASELINE)
 ===================================================== */
 router.get("/detail/:customer_code", async (req, res) => {
   try {
     const { customer_code } = req.params;
     const { startDate, endDate } = req.query;
 
-    let balance = 0;
     let customerName = "Registered Customer";
+
+    // 1. Fetch Snapshot Cutoff & Baseline Balance for this Customer
+    const snapshotRes = await db.query(`
+      SELECT id, date_to 
+      FROM archive_snapshots 
+      ORDER BY date_to DESC, id DESC 
+      LIMIT 1
+    `);
+
+    let snapshotDateTo = "1970-01-01";
+    let customerBaseline = 0;
+    let hasSnapshot = false;
+
+    if (snapshotRes.rows.length > 0) {
+      const snapshotId = snapshotRes.rows[0].id;
+      snapshotDateTo = new Date(snapshotRes.rows[0].date_to).toISOString().split("T")[0];
+      hasSnapshot = true;
+
+      const custBalRes = await db.query(`
+        SELECT balance 
+        FROM archive_balances 
+        WHERE snapshot_id = $1 AND UPPER(balance_type) = 'CUSTOMER' AND code = $2
+        LIMIT 1
+      `, [snapshotId, customer_code]);
+
+      if (custBalRes.rows.length > 0) {
+        customerBaseline = Number(custBalRes.rows[0].balance || 0);
+      }
+    }
 
     // Dynamic customer name lookup
     const nameRes = await db.query(
       `
       SELECT customer_name FROM (
         SELECT customer_name FROM bookings WHERE customer_code=$1 AND is_deleted=false AND customer_name IS NOT NULL AND customer_name != ''
-        UNION ALL
-        SELECT customer_name FROM hotels WHERE customer_code=$1 AND is_deleted=false AND customer_name IS NOT NULL AND customer_name != ''
-        UNION ALL
-        SELECT customer_name FROM visa WHERE customer_code=$1 AND is_deleted=false AND customer_name IS NOT NULL AND customer_name != ''
-        UNION ALL
-        SELECT customer_name FROM card WHERE customer_code=$1 AND is_deleted=false AND customer_name IS NOT NULL AND customer_name != ''
-        UNION ALL
-        SELECT customer_name FROM groups WHERE customer_code=$1 AND is_deleted=false AND customer_name IS NOT NULL AND customer_name != ''
-        UNION ALL
-        SELECT customer_name FROM ticketing WHERE customer_code=$1 AND is_deleted=false AND customer_name IS NOT NULL AND customer_name != ''
-        UNION ALL
-        SELECT customer_name FROM transport WHERE customer_code=$1 AND is_deleted=false AND customer_name IS NOT NULL AND customer_name != ''
-        UNION ALL
-        SELECT customer_name FROM ziyarat WHERE customer_code=$1 AND is_deleted=false AND customer_name IS NOT NULL AND customer_name != ''
+        UNION ALL SELECT customer_name FROM hotels WHERE customer_code=$1 AND is_deleted=false AND customer_name IS NOT NULL AND customer_name != ''
+        UNION ALL SELECT customer_name FROM visa WHERE customer_code=$1 AND is_deleted=false AND customer_name IS NOT NULL AND customer_name != ''
+        UNION ALL SELECT customer_name FROM card WHERE customer_code=$1 AND is_deleted=false AND customer_name IS NOT NULL AND customer_name != ''
+        UNION ALL SELECT customer_name FROM groups WHERE customer_code=$1 AND is_deleted=false AND customer_name IS NOT NULL AND customer_name != ''
+        UNION ALL SELECT customer_name FROM ticketing WHERE customer_code=$1 AND is_deleted=false AND customer_name IS NOT NULL AND customer_name != ''
+        UNION ALL SELECT customer_name FROM transport WHERE customer_code=$1 AND is_deleted=false AND customer_name IS NOT NULL AND customer_name != ''
+        UNION ALL SELECT customer_name FROM ziyarat WHERE customer_code=$1 AND is_deleted=false AND customer_name IS NOT NULL AND customer_name != ''
       ) x LIMIT 1
       `,
       [customer_code]
@@ -98,63 +119,48 @@ router.get("/detail/:customer_code", async (req, res) => {
       customerName = nameRes.rows[0].customer_name;
     }
 
-    // Load Sales using customer_code
+    // Load Live Sales after snapshot
     const salesRes = await db.query(
       `
-      SELECT ref_no, booking_date, total_pkr, 'Booking' AS src FROM bookings WHERE customer_code=$1 AND is_deleted=false
-      UNION ALL
-      SELECT ref_no, booking_date, total_pkr, 'Hotel' AS src FROM hotels WHERE customer_code=$1 AND is_deleted=false
-      UNION ALL
-      SELECT ref_no, booking_date, total_pkr, 'Visa' AS src FROM visa WHERE customer_code=$1 AND is_deleted=false
-      UNION ALL
-      SELECT ref_no, booking_date, total_pkr, 'Card' AS src FROM card WHERE customer_code=$1 AND is_deleted=false
-      UNION ALL
-      SELECT ref_no, booking_date, total_pkr, 'Group' AS src FROM groups WHERE customer_code=$1 AND is_deleted=false
-      UNION ALL
-      SELECT ref_no, booking_date, total_pkr, 'Ticketing' AS src FROM ticketing WHERE customer_code=$1 AND is_deleted=false
-      UNION ALL
-      SELECT ref_no, booking_date, total_pkr, 'Transport' AS src FROM transport WHERE customer_code=$1 AND is_deleted=false
-      UNION ALL
-      SELECT ref_no, booking_date, total_pkr, 'Ziyarat' AS src FROM ziyarat WHERE customer_code=$1 AND is_deleted=false
+      SELECT ref_no, booking_date, total_pkr, 'Booking' AS src FROM bookings WHERE customer_code=$1 AND is_deleted=false AND booking_date::date > $2::date
+      UNION ALL SELECT ref_no, booking_date, total_pkr, 'Hotel' AS src FROM hotels WHERE customer_code=$1 AND is_deleted=false AND booking_date::date > $2::date
+      UNION ALL SELECT ref_no, booking_date, total_pkr, 'Visa' AS src FROM visa WHERE customer_code=$1 AND is_deleted=false AND booking_date::date > $2::date
+      UNION ALL SELECT ref_no, booking_date, total_pkr, 'Card' AS src FROM card WHERE customer_code=$1 AND is_deleted=false AND booking_date::date > $2::date
+      UNION ALL SELECT ref_no, booking_date, total_pkr, 'Group' AS src FROM groups WHERE customer_code=$1 AND is_deleted=false AND booking_date::date > $2::date
+      UNION ALL SELECT ref_no, booking_date, total_pkr, 'Ticketing' AS src FROM ticketing WHERE customer_code=$1 AND is_deleted=false AND booking_date::date > $2::date
+      UNION ALL SELECT ref_no, booking_date, total_pkr, 'Transport' AS src FROM transport WHERE customer_code=$1 AND is_deleted=false AND booking_date::date > $2::date
+      UNION ALL SELECT ref_no, booking_date, total_pkr, 'Ziyarat' AS src FROM ziyarat WHERE customer_code=$1 AND is_deleted=false AND booking_date::date > $2::date
       `,
-      [customer_code]
+      [customer_code, snapshotDateTo]
     );
 
-    // Load Payments WITH Bank Join
+    // Load Live Payments after snapshot
     const paymentsRes = await db.query(
       `
-      SELECT 
-        cp.id, 
-        cp.payment_date, 
-        cp.amount, 
-        cp.type, 
-        cp.payment_method, 
-        cp.bank_profile_id,
-        b.bank_name
+      SELECT cp.id, cp.payment_date, cp.amount, cp.type, cp.payment_method, cp.bank_profile_id, b.bank_name
       FROM customer_payments cp
       LEFT JOIN public.banks b ON b.id = cp.bank_profile_id
-      WHERE cp.ref_no = $1
+      WHERE cp.ref_no = $1 AND cp.payment_date::date > $2::date
       ORDER BY cp.payment_date, cp.id
       `,
-      [customer_code]
+      [customer_code, snapshotDateTo]
     );
 
     let allEntries = [];
 
-    // Map Sales -> Credit (+)
+    // Sales -> Credit (+)
     salesRes.rows.forEach(s => {
-      const amt = Math.round(Number(s.total_pkr || 0));
       allEntries.push({
         id: `SALE-${s.ref_no}`,
         date: s.booking_date,
         description: `Sale Invoice (${s.src}) - Ref: ${s.ref_no}`,
         debit: 0,
-        credit: amt,
+        credit: Math.round(Number(s.total_pkr || 0)),
         type: "sale"
       });
     });
 
-    // Map Payments & Opening Balances
+    // Payments -> Debit (-)
     paymentsRes.rows.forEach(p => {
       const amt = Math.round(Number(p.amount || 0));
       let methodDesc = p.payment_method || "";
@@ -163,65 +169,70 @@ router.get("/detail/:customer_code", async (req, res) => {
       }
 
       if (p.type === "opening_balance") {
-        // Opening Balance -> Credit (+)
         allEntries.push({
           id: p.id,
           date: p.payment_date,
           description: `🔑 Opening Balance`,
           debit: 0,
           credit: amt,
-          type: "opening_balance",
-          bank_profile_id: p.bank_profile_id
+          type: "opening_balance"
         });
       } else {
-        // Customer Payment / Adjustment -> Debit (-)
         allEntries.push({
           id: p.id,
           date: p.payment_date,
-          description: p.type === "adjustment" ? `Adjustment Receipt (${methodDesc})` : `Payment Received (${methodDesc})`,
+          description: p.type === "adjustment" ? `Adjustment (${methodDesc})` : `Payment Received (${methodDesc})`,
           debit: amt,
           credit: 0,
-          type: "payment",
-          bank_profile_id: p.bank_profile_id
+          type: "payment"
         });
       }
     });
 
-/* =====================================================
-   1. REGISTERED LEDGER DETAIL (FIXED RUNNING BALANCE)
-===================================================== */
+    // Pehle Ascending Sort (Chronological)
+    allEntries.sort((a, b) => new Date(a.date) - new Date(b.date));
 
-// 1. Pehle Oldest to Newest (Ascending) sort karein taake Balance sahi calculate ho
-allEntries.sort((a, b) => new Date(a.date) - new Date(b.date));
+    let runningBalance = 0;
+    let calculatedRows = [];
 
-let runningBalance = 0;
-let calculatedRows = [];
+    // Inject Snapshot Baseline First
+    if (hasSnapshot) {
+      runningBalance = customerBaseline;
+      calculatedRows.push({
+        id: "SNAPSHOT_OPENING",
+        date: snapshotDateTo,
+        description: `🔑 Archived Snapshot Customer Balance (${snapshotDateTo})`,
+        debit: customerBaseline < 0 ? Math.abs(customerBaseline) : 0,
+        credit: customerBaseline >= 0 ? customerBaseline : 0,
+        type: "snapshot",
+        balance: runningBalance
+      });
+    }
 
-// 2. Chronological order mein running balance calculate karein
-allEntries.forEach((entry) => {
-  runningBalance = runningBalance + entry.credit - entry.debit;
+    allEntries.forEach((entry) => {
+      runningBalance = runningBalance + entry.credit - entry.debit;
 
-  let matchDate = true;
-  if (startDate && new Date(entry.date) < new Date(startDate)) matchDate = false;
-  if (endDate && new Date(entry.date) > new Date(endDate)) matchDate = false;
+      let matchDate = true;
+      if (startDate && new Date(entry.date) < new Date(startDate)) matchDate = false;
+      if (endDate && new Date(entry.date) > new Date(endDate)) matchDate = false;
 
-  if (matchDate) {
-    calculatedRows.push({
-      ...entry,
-      balance: runningBalance
+      if (matchDate) {
+        calculatedRows.push({
+          ...entry,
+          balance: runningBalance
+        });
+      }
     });
-  }
-});
 
-// 3. UI par dikhane ke liye Newest First (Descending) sort kar lein
-calculatedRows.sort((a, b) => new Date(b.date) - new Date(a.date));
+    // UI View ke liye Descending Sort
+    calculatedRows.sort((a, b) => new Date(b.date) - new Date(a.date));
 
-res.json({
-  success: true,
-  customerName,
-  rows: calculatedRows,
-  totalRemainingBalance: runningBalance
-});
+    res.json({
+      success: true,
+      customerName,
+      rows: calculatedRows,
+      totalRemainingBalance: runningBalance
+    });
 
   } catch (err) {
     console.error(err);
@@ -230,7 +241,7 @@ res.json({
 });
 
 /* =====================================================
-   2. GET ALL PENDING CUSTOMERS (FIXED: NAME FROM PAYMENTS / CUSTOMERS)
+   2. GET ALL PENDING CUSTOMERS (WITH SNAPSHOT BASELINE)
 ===================================================== */
 router.get("/pending/list", async (req, res) => {
   try {
@@ -262,33 +273,55 @@ router.get("/pending/list", async (req, res) => {
       return res.json({ success: true, rows: [] });
     }
 
+    // 1. Fetch Latest Archive Snapshot Info
+    const snapshotRes = await db.query(`
+      SELECT id, date_to 
+      FROM archive_snapshots 
+      ORDER BY date_to DESC, id DESC 
+      LIMIT 1
+    `);
+
+    let snapshotId = null;
+    let snapshotDateTo = "1970-01-01";
+
+    if (snapshotRes.rows.length > 0) {
+      snapshotId = snapshotRes.rows[0].id;
+      snapshotDateTo = new Date(snapshotRes.rows[0].date_to).toISOString().split("T")[0];
+    }
+
+    // 2. Query Credits, Debits (after snapshot) and Archived Balances
     const result = await db.query(
       `
-      WITH all_credits AS (
-        SELECT customer_code, total_pkr AS amount FROM bookings WHERE customer_code = ANY($1) AND is_deleted=false
+      WITH snapshot_balances AS (
+        SELECT code AS customer_code, balance AS snapshot_bal
+        FROM archive_balances
+        WHERE snapshot_id = $2 AND UPPER(balance_type) = 'CUSTOMER' AND code = ANY($1)
+      ),
+
+      all_credits AS (
+        SELECT customer_code, total_pkr AS amount FROM bookings WHERE customer_code = ANY($1) AND is_deleted=false AND booking_date::date > $3::date
         UNION ALL
-        SELECT customer_code, total_pkr FROM hotels WHERE customer_code = ANY($1) AND is_deleted=false
+        SELECT customer_code, total_pkr FROM hotels WHERE customer_code = ANY($1) AND is_deleted=false AND booking_date::date > $3::date
         UNION ALL
-        SELECT customer_code, total_pkr FROM visa WHERE customer_code = ANY($1) AND is_deleted=false
+        SELECT customer_code, total_pkr FROM visa WHERE customer_code = ANY($1) AND is_deleted=false AND booking_date::date > $3::date
         UNION ALL
-        SELECT customer_code, total_pkr FROM card WHERE customer_code = ANY($1) AND is_deleted=false
+        SELECT customer_code, total_pkr FROM card WHERE customer_code = ANY($1) AND is_deleted=false AND booking_date::date > $3::date
         UNION ALL
-        SELECT customer_code, total_pkr FROM groups WHERE customer_code = ANY($1) AND is_deleted=false
+        SELECT customer_code, total_pkr FROM groups WHERE customer_code = ANY($1) AND is_deleted=false AND booking_date::date > $3::date
         UNION ALL
-        SELECT customer_code, total_pkr FROM ticketing WHERE customer_code = ANY($1) AND is_deleted=false
+        SELECT customer_code, total_pkr FROM ticketing WHERE customer_code = ANY($1) AND is_deleted=false AND booking_date::date > $3::date
         UNION ALL
-        SELECT customer_code, total_pkr FROM transport WHERE customer_code = ANY($1) AND is_deleted=false
+        SELECT customer_code, total_pkr FROM transport WHERE customer_code = ANY($1) AND is_deleted=false AND booking_date::date > $3::date
         UNION ALL
-        SELECT customer_code, total_pkr FROM ziyarat WHERE customer_code = ANY($1) AND is_deleted=false
+        SELECT customer_code, total_pkr FROM ziyarat WHERE customer_code = ANY($1) AND is_deleted=false AND booking_date::date > $3::date
         UNION ALL
-        SELECT ref_no AS customer_code, amount FROM customer_payments WHERE ref_no = ANY($1) AND type='opening_balance'
+        SELECT ref_no AS customer_code, amount FROM customer_payments WHERE ref_no = ANY($1) AND type='opening_balance' AND payment_date::date > $3::date
       ),
       
       all_debits AS (
-        SELECT ref_no AS customer_code, amount FROM customer_payments WHERE ref_no = ANY($1) AND type != 'opening_balance'
+        SELECT ref_no AS customer_code, amount FROM customer_payments WHERE ref_no = ANY($1) AND type != 'opening_balance' AND payment_date::date > $3::date
       ),
 
-      /* ✨ FIX: Dynamic Customer Name Lookup including Master Customers & Payments Table */
       customer_names AS (
         SELECT DISTINCT ON (customer_code) customer_code, customer_name
         FROM (
@@ -308,7 +341,6 @@ router.get("/pending/list", async (req, res) => {
           UNION ALL
           SELECT customer_code, customer_name FROM ziyarat WHERE customer_code = ANY($1) AND customer_name IS NOT NULL AND customer_name != '' AND is_deleted=false
           UNION ALL
-          /* Master Customer Table Lookup (Agar master table hai) */
           SELECT customer_code, name AS customer_name FROM customers WHERE customer_code = ANY($1) AND name IS NOT NULL AND name != ''
         ) n
       ),
@@ -316,13 +348,13 @@ router.get("/pending/list", async (req, res) => {
       aggregated AS (
         SELECT 
           c.customer_code,
+          COALESCE(sb.snapshot_bal, 0) AS snapshot_bal,
           COALESCE(cr.total_credit, 0) AS total_sale,
           COALESCE(db.total_debit, 0) AS total_paid
         FROM (
-          SELECT customer_code FROM all_credits
-          UNION
-          SELECT customer_code FROM all_debits
+          SELECT unnest($1::text[]) AS customer_code
         ) c
+        LEFT JOIN snapshot_balances sb ON c.customer_code = sb.customer_code
         LEFT JOIN (SELECT customer_code, SUM(amount) AS total_credit FROM all_credits GROUP BY customer_code) cr ON c.customer_code = cr.customer_code
         LEFT JOIN (SELECT customer_code, SUM(amount) AS total_debit FROM all_debits GROUP BY customer_code) db ON c.customer_code = db.customer_code
       )
@@ -330,17 +362,17 @@ router.get("/pending/list", async (req, res) => {
       SELECT 
         a.customer_code,
         COALESCE(n.customer_name, 'Registered Customer') AS customer_name,
-        (a.total_sale - a.total_paid) AS remaining_balance,
+        (a.snapshot_bal + a.total_sale - a.total_paid) AS remaining_balance,
         a.total_paid
       FROM aggregated a
       LEFT JOIN customer_names n ON a.customer_code = n.customer_code
-      WHERE (a.total_sale - a.total_paid) != 0
+      WHERE (a.snapshot_bal + a.total_sale - a.total_paid) != 0
       `,
-      [validCustomerCodes]
+      [validCustomerCodes, snapshotId, snapshotDateTo]
     );
 
     let pending = result.rows.map(row => {
-      const balance = Number(row.remaining_balance);
+      const balance = Math.round(Number(row.remaining_balance));
       const totalPaid = Number(row.total_paid);
       let status = "PARTIAL";
 
@@ -376,7 +408,6 @@ router.post("/payment", async (req, res) => {
     if (!amount || Number(amount) <= 0) return res.json({ success: false, error: "Amount must be greater than zero" });
     if (!payment_date) return res.json({ success: false, error: "Payment Date is required" });
 
-    // Sirf Customer Payment Save Hogi (Bank Table me nahi jayegi)
     await db.query(
       `
       INSERT INTO customer_payments (ref_no, amount, payment_method, bank_profile_id, type, payment_date)
@@ -427,7 +458,7 @@ router.post("/delete/:id", async (req, res) => {
 });
 
 /* =====================================================
-   5. EDIT PAYMENT / ENTRY (UPDATED TO HANDLE TYPE FITMENT)
+   5. EDIT PAYMENT / ENTRY
 ===================================================== */
 router.put("/edit/:id", async (req, res) => {
   try {

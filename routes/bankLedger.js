@@ -17,10 +17,8 @@ router.get("/profiles", async (req, res) => {
   }
 });
 
-
-
 /* ======================================================
-   GET BANK LEDGER (PROFILE WISE)
+   GET BANK LEDGER (WITH ARCHIVE SNAPSHOT BASELINE)
 ====================================================== */
 router.get("/", async (req, res) => {
   try {
@@ -30,40 +28,49 @@ router.get("/", async (req, res) => {
       return res.json({ success: true, rows: [] });
     }
 
+    // 1. Fetch Latest Archive Snapshot Cutoff
     const snapshotRes = await pool.query(`
-      SELECT date_to, opening_bank 
+      SELECT id, date_to 
       FROM archive_snapshots 
-      WHERE opening_bank IS NOT NULL 
       ORDER BY date_to DESC, id DESC 
       LIMIT 1
     `);
 
     let snapshotDateTo = "1970-01-01";
+    let openingBankBaseline = 0;
     let hasSnapshot = false;
 
     if (snapshotRes.rows.length > 0) {
-      snapshotDateTo = new Date(snapshotRes.rows[0].date_to).toLocaleDateString("en-CA");
+      const snapshotId = snapshotRes.rows[0].id;
+      snapshotDateTo = new Date(snapshotRes.rows[0].date_to).toISOString().split("T")[0];
       hasSnapshot = true;
+
+      // 2. Fetch specific Bank's snapshot balance from archive_balances
+      const bankBalRes = await pool.query(`
+        SELECT balance 
+        FROM archive_balances 
+        WHERE snapshot_id = $1 AND UPPER(balance_type) = 'BANK' AND code = $2
+        LIMIT 1
+      `, [snapshotId, String(bank_profile_id)]);
+
+      if (bankBalRes.rows.length > 0) {
+        openingBankBaseline = Number(bankBalRes.rows[0].balance || 0);
+      }
     }
 
     let params = [snapshotDateTo, bank_profile_id];
 
-    const btBankFilter = "AND bt.bank_profile_id = $2";
-    const cpBankFilter = "AND cp.bank_profile_id = $2";
-    const spBankFilter = "AND sp.bank_profile_id = $2";
-    const expBankFilter = "AND e.bank_profile_id = $2";
-
     const sql = `
     WITH all_entries AS (
-
-        /* ================= CUSTOMER BANK PAYMENTS ================= */
+        /* CUSTOMER BANK PAYMENTS */
         SELECT
           cp.id,
           cp.payment_date::date AS txn_date,
           'Customer Payment - ' || COALESCE(
-             -- First check if reference is Customer Code or Ref No without date restriction
              (SELECT customer_name FROM (
-                SELECT customer_name FROM bookings WHERE (customer_code = cp.ref_no OR ref_no = cp.ref_no) AND customer_name IS NOT NULL AND customer_name != ''
+                SELECT name AS customer_name FROM customers WHERE customer_code = cp.ref_no AND name IS NOT NULL AND name != ''
+                UNION ALL SELECT name AS customer_name FROM archive_balances WHERE code = cp.ref_no AND name IS NOT NULL AND name != ''
+                UNION ALL SELECT customer_name FROM bookings WHERE (customer_code = cp.ref_no OR ref_no = cp.ref_no) AND customer_name IS NOT NULL AND customer_name != ''
                 UNION ALL SELECT customer_name FROM ticketing WHERE (customer_code = cp.ref_no OR ref_no = cp.ref_no) AND customer_name IS NOT NULL AND customer_name != ''
                 UNION ALL SELECT customer_name FROM hotels WHERE (customer_code = cp.ref_no OR ref_no = cp.ref_no) AND customer_name IS NOT NULL AND customer_name != ''
                 UNION ALL SELECT customer_name FROM visa WHERE (customer_code = cp.ref_no OR ref_no = cp.ref_no) AND customer_name IS NOT NULL AND customer_name != ''
@@ -75,93 +82,100 @@ router.get("/", async (req, res) => {
           ) || ' (Ref: ' || cp.ref_no || ')' AS description,
           ROUND(cp.amount::numeric,0) AS credit,
           NULL::numeric AS debit,
-          1 AS order_priority,
-          'customer' AS source,
-          cp.bank_profile_id
+          2 AS order_priority,
+          'customer' AS source
         FROM customer_payments cp
         WHERE LOWER(COALESCE(cp.type,'')) != 'adjustment'
-          AND LOWER(COALESCE(cp.type,'')) != 'opening_balance' -- Exclude Opening Balance
+          AND LOWER(COALESCE(cp.type,'')) != 'opening_balance'
           AND LOWER(COALESCE(cp.payment_method,''))='bank'
-          AND cp.payment_date::date >= $1::date
-          ${cpBankFilter}
+          AND cp.payment_date::date > $1::date
+          AND cp.bank_profile_id = $2
 
         UNION ALL
 
-        /* ================= SUPPLIER BANK PAYMENTS ================= */
+        /* SUPPLIER BANK PAYMENTS */
         SELECT
           sp.id,
           sp.payment_date::date AS txn_date,
           'Supplier Payment - ' || COALESCE(s.supplier_name,'') || ' (Ref: ' || sp.id || ')' AS description,
           NULL::numeric AS credit,
           ROUND(sp.amount::numeric,0) AS debit,
-          1 AS order_priority,
-          'supplier' AS source,
-          sp.bank_profile_id
+          2 AS order_priority,
+          'supplier' AS source
         FROM supplier_payments sp
         LEFT JOIN suppliers s ON s.id = sp.supplier_id
         WHERE LOWER(COALESCE(sp.type,'')) != 'adjustment'
-          AND LOWER(COALESCE(sp.type,'')) != 'opening_balance' -- Exclude Opening Balance
+          AND LOWER(COALESCE(sp.type,'')) != 'opening_balance'
           AND LOWER(COALESCE(sp.payment_method,''))='bank'
-          AND sp.payment_date::date >= $1::date
-          ${spBankFilter}
+          AND sp.payment_date::date > $1::date
+          AND sp.bank_profile_id = $2
 
         UNION ALL
 
-        /* ================= EXPENSE BANK ================= */
+        /* EXPENSE BANK */
         SELECT
           e.id,
           e.expense_date::date AS txn_date,
           'Expense: ' || e.title AS description,
           NULL::numeric AS credit,
           ROUND(e.amount::numeric,0) AS debit,
-          1 AS order_priority,
-          'expense' AS source,
-          e.bank_profile_id
+          2 AS order_priority,
+          'expense' AS source
         FROM expense_ledger e
         WHERE LOWER(COALESCE(e.payment_method,''))='bank'
-          AND e.expense_date::date >= $1::date
-          ${expBankFilter}
+          AND e.expense_date::date > $1::date
+          AND e.bank_profile_id = $2
 
         UNION ALL
 
-        /* ================= MANUAL BANK (DEPOSIT / WITHDRAW) ================= */
+        /* MANUAL BANK */
         SELECT
           bt.id,
           bt.txn_date::date AS txn_date,
           bt.comment AS description,
           CASE WHEN bt.type='deposit' THEN ROUND(bt.amount::numeric,0) END AS credit,
           CASE WHEN bt.type='withdraw' THEN ROUND(bt.amount::numeric,0) END AS debit,
-          1 AS order_priority,
-          'manual' AS source,
-          bt.bank_profile_id
+          2 AS order_priority,
+          'manual' AS source
         FROM bank_transactions bt
-        WHERE bt.txn_date::date >= $1::date
-          ${btBankFilter}
+        WHERE bt.txn_date::date > $1::date
+          AND bt.bank_profile_id = $2
     )
-
-    SELECT
-      id,
-      txn_date,
-      description,
-      credit,
-      debit,
-      source,
-      bank_profile_id,
-      ROUND(
-        SUM(COALESCE(credit,0) - COALESCE(debit,0)) OVER(ORDER BY txn_date ASC, order_priority ASC, id ASC)
-      ,0) AS balance
+    SELECT id, txn_date, description, credit, debit, source
     FROM all_entries
-    ORDER BY txn_date ASC, order_priority ASC, id ASC;
+    ORDER BY txn_date ASC, id ASC;
     `;
 
     const result = await pool.query(sql, params);
-    
-    const formattedRows = result.rows.map((r) => ({
-      ...r,
-      credit: Number(r.credit || 0),
-      debit: Number(r.debit || 0),
-      balance: Number(r.balance || 0),
-    }));
+    let formattedRows = [];
+    let runningBalance = 0;
+
+    // Inject Baseline if Snapshot exists
+    if (hasSnapshot) {
+      runningBalance = openingBankBaseline;
+      formattedRows.push({
+        id: "SNAPSHOT_OPENING",
+        txn_date: snapshotDateTo,
+        description: `🔑 Archived Bank Baseline Balance (${snapshotDateTo})`,
+        credit: openingBankBaseline >= 0 ? openingBankBaseline : 0,
+        debit: openingBankBaseline < 0 ? Math.abs(openingBankBaseline) : 0,
+        source: "snapshot",
+        balance: runningBalance
+      });
+    }
+
+    result.rows.forEach((r) => {
+      const credit = Number(r.credit || 0);
+      const debit = Number(r.debit || 0);
+      runningBalance += (credit - debit);
+
+      formattedRows.push({
+        ...r,
+        credit,
+        debit,
+        balance: runningBalance,
+      });
+    });
 
     res.json({ success: true, rows: formattedRows });
   } catch (err) {
@@ -169,7 +183,6 @@ router.get("/", async (req, res) => {
     res.json({ success: false, error: err.message, rows: [] });
   }
 });
-
 
 /* ======================================================
    SAVE MANUAL BANK ENTRY (DEPOSIT / WITHDRAW)
@@ -217,7 +230,6 @@ router.delete("/transaction/:id", async (req, res) => {
   }
 });
 
-
 /* ======================================================
    EDIT MANUAL BANK TRANSACTION
 ====================================================== */
@@ -245,7 +257,5 @@ router.put("/transaction/:id", async (req, res) => {
     res.json({ success: false, error: err.message });
   }
 });
-
-
 
 module.exports = router;
