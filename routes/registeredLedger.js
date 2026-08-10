@@ -152,6 +152,7 @@ router.get("/detail/:customer_code", async (req, res) => {
     salesRes.rows.forEach(s => {
       allEntries.push({
         id: `SALE-${s.ref_no}`,
+        db_id: s.ref_no,
         date: s.booking_date,
         description: `Sale Invoice (${s.src}) - Ref: ${s.ref_no}`,
         debit: 0,
@@ -171,6 +172,7 @@ router.get("/detail/:customer_code", async (req, res) => {
       if (p.type === "opening_balance") {
         allEntries.push({
           id: p.id,
+          db_id: p.id,
           date: p.payment_date,
           description: `🔑 Opening Balance`,
           debit: 0,
@@ -180,6 +182,7 @@ router.get("/detail/:customer_code", async (req, res) => {
       } else {
         allEntries.push({
           id: p.id,
+          db_id: p.id,
           date: p.payment_date,
           description: p.type === "adjustment" ? `Adjustment (${methodDesc})` : `Payment Received (${methodDesc})`,
           debit: amt,
@@ -189,8 +192,24 @@ router.get("/detail/:customer_code", async (req, res) => {
       }
     });
 
-    // Pehle Ascending Sort (Chronological)
-    allEntries.sort((a, b) => new Date(a.date) - new Date(b.date));
+    // 1. ASCENDING SORT WITH STABLE TIE-BREAKER
+    // Order Priority: Opening Balance (1) -> Sales (2) -> Payments (3)
+    const typePriority = { opening_balance: 1, sale: 2, payment: 3 };
+
+    allEntries.sort((a, b) => {
+      const dateA = new Date(a.date).getTime();
+      const dateB = new Date(b.date).getTime();
+      
+      if (dateA !== dateB) return dateA - dateB;
+
+      // Same Date: Opening balance -> Sales -> Payments
+      const priorityA = typePriority[a.type] || 99;
+      const priorityB = typePriority[b.type] || 99;
+      if (priorityA !== priorityB) return priorityA - priorityB;
+
+      // Secondary tie-breaker by DB ID / ID string
+      return String(a.db_id).localeCompare(String(b.db_id));
+    });
 
     let runningBalance = 0;
     let calculatedRows = [];
@@ -209,6 +228,7 @@ router.get("/detail/:customer_code", async (req, res) => {
       });
     }
 
+    // Calculate Running Balance Chronologically
     allEntries.forEach((entry) => {
       runningBalance = runningBalance + entry.credit - entry.debit;
 
@@ -224,8 +244,8 @@ router.get("/detail/:customer_code", async (req, res) => {
       }
     });
 
-    // UI View ke liye Descending Sort
-    calculatedRows.sort((a, b) => new Date(b.date) - new Date(a.date));
+    // 2. UI DISPLAY REVERSE (Strictly reverse calculated chronological array)
+    calculatedRows.reverse();
 
     res.json({
       success: true,
