@@ -141,6 +141,16 @@ router.post("/save", async (req, res) => {
     // ===============================
     // NEW MODE (INSERT)
     // ===============================
+    
+    // ⚡ Auto-fix primary key sequence before inserting new record
+    await db.query(`
+      SELECT setval(
+        COALESCE(pg_get_serial_sequence('bookings', 'id'), 'bookings_id_seq'), 
+        COALESCE((SELECT MAX(id) FROM bookings), 0) + 1, 
+        false
+      );
+    `).catch(() => {});
+
     const ref_no = await generateRefNo();
 
     await db.query(
@@ -254,10 +264,14 @@ router.post("/save", async (req, res) => {
 // GET ALL BOOKINGS
 // ============================================
 router.get("/list", async (req, res) => {
-  const q = await db.query(
-    "SELECT * FROM bookings WHERE is_deleted = false ORDER BY id DESC"
-  );
-  res.json(q.rows);
+  try {
+    const q = await db.query(
+      "SELECT * FROM bookings WHERE is_deleted = false ORDER BY id DESC"
+    );
+    res.json(q.rows);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // ============================================
@@ -279,19 +293,22 @@ router.get("/get/:ref", async (req, res) => {
   }
 });
 
-
 // ============================================
 // HOTEL VOUCHER
 // ============================================
 router.get("/voucher/:ref", async (req, res) => {
-  const q = await db.query(
-    "SELECT ref_no, customer_name, booking_date, hotels FROM bookings WHERE ref_no=$1",
-    [req.params.ref]
-  );
+  try {
+    const q = await db.query(
+      "SELECT ref_no, customer_name, booking_date, hotels FROM bookings WHERE ref_no=$1",
+      [req.params.ref]
+    );
 
-  if (!q.rows.length) return res.json({ success: false });
+    if (!q.rows.length) return res.json({ success: false });
 
-  res.json({ success: true, ...q.rows[0] });
+    res.json({ success: true, ...q.rows[0] });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // ============================================

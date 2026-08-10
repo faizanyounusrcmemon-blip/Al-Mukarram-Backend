@@ -17,7 +17,7 @@ router.post("/save", async (req, res) => {
   try {
     const {
       ref_no,
-      customer_code, // ⚡ Naya customer_code accept kiya
+      customer_code,
       customer_name,
       booking_date,
       start_date,    
@@ -35,6 +35,15 @@ router.post("/save", async (req, res) => {
     let finalRef = ref_no;
 
     if (!finalRef) {
+      // ⚡ Auto-fix primary key sequence before inserting new record
+      await db.query(`
+        SELECT setval(
+          COALESCE(pg_get_serial_sequence('groups', 'id'), 'groups_id_seq'), 
+          COALESCE((SELECT MAX(id) FROM groups), 0) + 1, 
+          false
+        );
+      `).catch(() => {});
+
       // 🔹 NEW INSERT WITH DATES & CUSTOMER CODE
       finalRef = await generateRefNo();
 
@@ -44,7 +53,7 @@ router.post("/save", async (req, res) => {
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
         [
           finalRef,
-          customer_code || null, // ⚡ Walk-in customer ke liye null save hoga
+          customer_code || null,
           customer_name,
           booking_date,
           start_date,  
@@ -74,7 +83,7 @@ router.post("/save", async (req, res) => {
            total_pkr=$11
          WHERE ref_no=$12`,
         [
-          customer_code || null, // ⚡ Update dynamic values
+          customer_code || null,
           customer_name,
           booking_date,
           start_date,
@@ -101,15 +110,19 @@ router.post("/save", async (req, res) => {
 // GET BY REF
 // ========================
 router.get("/get/:ref", async (req, res) => {
-  const q = await db.query(
-    "SELECT * FROM groups WHERE ref_no=$1 AND is_deleted=false",
-    [req.params.ref]
-  );
+  try {
+    const q = await db.query(
+      "SELECT * FROM groups WHERE ref_no=$1 AND is_deleted=false",
+      [req.params.ref]
+    );
 
-  if (q.rows.length === 0)
-    return res.json({ success: false });
+    if (q.rows.length === 0)
+      return res.json({ success: false });
 
-  res.json({ success: true, row: q.rows[0] });
+    res.json({ success: true, row: q.rows[0] });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // ===================================
@@ -135,7 +148,7 @@ router.delete("/delete/:ref_no", async (req, res) => {
     const currentDeletePass = passCheck.rows[0].password_val;
 
     if (password !== currentDeletePass) {
-      return res.json({ success: false, message: "❌ Incorrect Destruction Override Password!" });
+      return res.json({ success: false, message: "❌ Incorrect Delete Password! Access Denied 😎" });
     }
 
     const purchaseCheck = await db.query(
@@ -183,6 +196,24 @@ router.delete("/delete/:ref_no", async (req, res) => {
   } catch (err) {
     console.error("DELETE ERROR:", err);
     res.json({ success: false, error: err.message });
+  }
+});
+
+// ========================
+// DELETED VIEW
+// ========================
+router.get("/get-deleted/:ref", async (req, res) => {
+  try {
+    const q = await db.query(
+      "SELECT * FROM groups WHERE ref_no=$1 AND is_deleted=true",
+      [req.params.ref]
+    );
+
+    if (!q.rows.length) return res.json({ success: false });
+
+    res.json({ success: true, row: q.rows[0] });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

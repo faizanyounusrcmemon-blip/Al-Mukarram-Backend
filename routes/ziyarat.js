@@ -15,7 +15,7 @@ router.post("/save", async (req, res) => {
   try {
     const {
       ref_no,
-      customer_code, // ⚡ Naya customer_code field accept kiya
+      customer_code,
       customer_name,
       booking_date,
       rows,
@@ -27,6 +27,15 @@ router.post("/save", async (req, res) => {
     let finalRef = ref_no;
 
     if (!finalRef) {
+      // ⚡ Auto-fix primary key sequence before inserting new record
+      await db.query(`
+        SELECT setval(
+          COALESCE(pg_get_serial_sequence('ziyarat', 'id'), 'ziyarat_id_seq'), 
+          COALESCE((SELECT MAX(id) FROM ziyarat), 0) + 1, 
+          false
+        );
+      `).catch(() => {});
+
       finalRef = await generateRef();
 
       await db.query(
@@ -37,7 +46,7 @@ router.post("/save", async (req, res) => {
         `,
         [
           finalRef,
-          customer_code || null, // ⚡ Database me save kiya (Walk-in ke liye null)
+          customer_code || null,
           customer_name,
           booking_date,
           JSON.stringify(rows || []),
@@ -60,7 +69,7 @@ router.post("/save", async (req, res) => {
         WHERE ref_no=$8
         `,
         [
-          customer_code || null, // ⚡ Update query me bhi handle kiya
+          customer_code || null,
           customer_name,
           booking_date,
           JSON.stringify(rows || []),
@@ -76,7 +85,7 @@ router.post("/save", async (req, res) => {
 
   } catch (err) {
     console.error("ZIYARAT SAVE ERROR:", err);
-    res.json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -84,14 +93,18 @@ router.post("/save", async (req, res) => {
 // GET BY REF
 // ========================
 router.get("/get/:ref", async (req, res) => {
-  const q = await db.query(
-    "SELECT * FROM ziyarat WHERE ref_no=$1 AND is_deleted=false",
-    [req.params.ref]
-  );
+  try {
+    const q = await db.query(
+      "SELECT * FROM ziyarat WHERE ref_no=$1 AND is_deleted=false",
+      [req.params.ref]
+    );
 
-  if (!q.rows.length) return res.json({ success: false });
+    if (!q.rows.length) return res.json({ success: false });
 
-  res.json({ success: true, row: q.rows[0] });
+    res.json({ success: true, row: q.rows[0] });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // ===================================

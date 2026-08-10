@@ -17,9 +17,9 @@ router.post("/save", async (req, res) => {
   try {
     const {
       ref_no,
-      customer_code,        // ⚡ Naya customer_code accept kiya
+      customer_code,
       customer_name,
-      agent_name,          
+      agent_name,
       booking_date,
       hotels,
       hotels_total,
@@ -34,7 +34,7 @@ router.post("/save", async (req, res) => {
       await db.query(
         `
         UPDATE hotels SET
-          customer_code=$2, -- ⚡ Database mapping added
+          customer_code=$2,
           customer_name=$3,
           agent_name=$4,
           booking_date=$5,
@@ -54,19 +54,19 @@ router.post("/save", async (req, res) => {
         `,
         [
           ref_no,                                       // $1
-          customer_code || null,                        // ⚡ $2
+          customer_code || null,                        // $2
           customer_name,                                // $3
           agent_name,                                   // $4
           booking_date,                                 // $5
-          JSON.stringify(hotels.map(h => h.checkIn)),   // $6
-          JSON.stringify(hotels.map(h => h.checkOut)),  // $7
-          JSON.stringify(hotels.map(h => h.nights)),    // $8
-          JSON.stringify(hotels.map(h => h.location)),  // $9
-          JSON.stringify(hotels.map(h => h.hotel)),     // $10
-          JSON.stringify(hotels.map(h => h.rooms)),     // $11
-          JSON.stringify(hotels.map(h => h.type)),      // $12
-          JSON.stringify(hotels.map(h => h.rate)),      // $13
-          JSON.stringify(hotels.map(h => h.total)),     // $14
+          JSON.stringify((hotels || []).map(h => h.checkIn)),   // $6
+          JSON.stringify((hotels || []).map(h => h.checkOut)),  // $7
+          JSON.stringify((hotels || []).map(h => h.nights)),    // $8
+          JSON.stringify((hotels || []).map(h => h.location)),  // $9
+          JSON.stringify((hotels || []).map(h => h.hotel)),     // $10
+          JSON.stringify((hotels || []).map(h => h.rooms)),     // $11
+          JSON.stringify((hotels || []).map(h => h.type)),      // $12
+          JSON.stringify((hotels || []).map(h => h.rate)),      // $13
+          JSON.stringify((hotels || []).map(h => h.total)),     // $14
           hotels_total,                                 // $15
           sar_rate,                                     // $16
           total_pkr,                                    // $17
@@ -79,6 +79,16 @@ router.post("/save", async (req, res) => {
     // =========================
     // NEW MODE (INSERT)
     // =========================
+
+    // ⚡ Auto-fix primary key sequence before inserting new record
+    await db.query(`
+      SELECT setval(
+        COALESCE(pg_get_serial_sequence('hotels', 'id'), 'hotels_id_seq'), 
+        COALESCE((SELECT MAX(id) FROM hotels), 0) + 1, 
+        false
+      );
+    `).catch(() => {});
+
     const newRef = await generateRef();
 
     await db.query(
@@ -86,7 +96,7 @@ router.post("/save", async (req, res) => {
       INSERT INTO hotels
       (
         ref_no,
-        customer_code,    -- ⚡ Column mapping
+        customer_code,
         customer_name,
         agent_name,
         booking_date,
@@ -107,23 +117,23 @@ router.post("/save", async (req, res) => {
       ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
       `,
       [
-        newRef,                                     // $1
-        customer_code || null,                      // ⚡ $2
-        customer_name,                              // $3
-        agent_name,                                 // $4
-        booking_date,                               // $5
-        JSON.stringify(hotels.map(h => h.checkIn)), // $6
-        JSON.stringify(hotels.map(h => h.checkOut)),// $7
-        JSON.stringify(hotels.map(h => h.nights)),  // $8
-        JSON.stringify(hotels.map(h => h.location)),// $9
-        JSON.stringify(hotels.map(h => h.hotel)),   // $10
-        JSON.stringify(hotels.map(h => h.rooms)),   // $11
-        JSON.stringify(hotels.map(h => h.type)),    // $12
-        JSON.stringify(hotels.map(h => h.rate)),    // $13
-        JSON.stringify(hotels.map(h => h.total)),   // $14
-        hotels_total,                               // $15
-        sar_rate,                                   // $16
-        total_pkr,                                  // $17
+        newRef,                                       // $1
+        customer_code || null,                        // $2
+        customer_name,                                // $3
+        agent_name,                                   // $4
+        booking_date,                                 // $5
+        JSON.stringify((hotels || []).map(h => h.checkIn)), // $6
+        JSON.stringify((hotels || []).map(h => h.checkOut)),// $7
+        JSON.stringify((hotels || []).map(h => h.nights)),  // $8
+        JSON.stringify((hotels || []).map(h => h.location)),// $9
+        JSON.stringify((hotels || []).map(h => h.hotel)),   // $10
+        JSON.stringify((hotels || []).map(h => h.rooms)),   // $11
+        JSON.stringify((hotels || []).map(h => h.type)),    // $12
+        JSON.stringify((hotels || []).map(h => h.rate)),    // $13
+        JSON.stringify((hotels || []).map(h => h.total)),   // $14
+        hotels_total,                                 // $15
+        sar_rate,                                     // $16
+        total_pkr,                                    // $17
       ]
     );
 
@@ -139,43 +149,47 @@ router.post("/save", async (req, res) => {
 // GET HOTEL BY REF (EDIT + VOUCHER)
 // ===================================
 router.get("/get/:ref", async (req, res) => {
-  const q = await db.query(
-    "SELECT * FROM hotels WHERE ref_no=$1 AND is_deleted=false",
-    [req.params.ref]
-  );
+  try {
+    const q = await db.query(
+      "SELECT * FROM hotels WHERE ref_no=$1 AND is_deleted=false",
+      [req.params.ref]
+    );
 
-  if (q.rows.length === 0) {
-    return res.json({ success: false });
+    if (q.rows.length === 0) {
+      return res.json({ success: false });
+    }
+
+    const r = q.rows[0];
+
+    const hotels = (r.hotel_name || []).map((_, i) => ({
+      hotel: r.hotel_name[i],
+      location: r.hotel_location?.[i] || "",
+      checkIn: r.hotel_checkin?.[i] || "",
+      checkOut: r.hotel_checkout?.[i] || "",
+      nights: r.hotel_nights?.[i] || 0,
+      rooms: r.hotel_rooms?.[i] || 0,
+      type: r.hotel_type?.[i] || "",
+      rate: r.hotel_rate?.[i] || 0,
+      total: r.hotel_total?.[i] || 0,
+    }));
+
+    res.json({
+      success: true,
+      row: {
+        ref_no: r.ref_no,
+        customer_code: r.customer_code || "",
+        customer_name: r.customer_name,
+        agent_name: r.agent_name || "",
+        booking_date: r.booking_date,
+        hotels,
+        hotels_total: r.hotels_total,
+        sar_rate: r.sar_rate,
+        total_pkr: r.total_pkr,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
-
-  const r = q.rows[0];
-
-  const hotels = r.hotel_name.map((_, i) => ({
-    hotel: r.hotel_name[i],
-    location: r.hotel_location[i],
-    checkIn: r.hotel_checkin[i],
-    checkOut: r.hotel_checkout[i],
-    nights: r.hotel_nights[i],
-    rooms: r.hotel_rooms[i],
-    type: r.hotel_type[i],
-    rate: r.hotel_rate[i],
-    total: r.hotel_total[i],
-  }));
-
-  res.json({
-    success: true,
-    row: {
-      ref_no: r.ref_no,
-      customer_code: r.customer_code || "", // ⚡ Sent code in payload response
-      customer_name: r.customer_name,
-      agent_name: r.agent_name || "",   
-      booking_date: r.booking_date,
-      hotels,
-      hotels_total: r.hotels_total,
-      sar_rate: r.sar_rate,
-      total_pkr: r.total_pkr,
-    },
-  });
 });
 
 // ===================================
@@ -184,16 +198,12 @@ router.get("/get/:ref", async (req, res) => {
 router.delete("/delete/:ref_no", async (req, res) => {
   try {
     const { ref_no } = req.params;
-    // 🌟 Frontend se bheja gaya password req.body se nikala
     const { password } = req.body;
 
     if (!password) {
       return res.json({ success: false, message: "❌ Delete password is required!" });
     }
 
-    // ===============================================
-    // 🔍 LIVE PASSWORD LOOKUP FROM system_passwords TABLE
-    // ===============================================
     const passCheck = await db.query(
       "SELECT password_val FROM public.system_passwords WHERE key_name = 'delete_pass'"
     );
@@ -204,14 +214,10 @@ router.delete("/delete/:ref_no", async (req, res) => {
 
     const currentDeletePass = passCheck.rows[0].password_val;
 
-    // Validate if entered password matches the database value
     if (password !== currentDeletePass) {
       return res.json({ success: false, message: "❌ Incorrect Delete Password! Access Denied 😎" });
     }
 
-    // ===============================
-    // CHECK IF PURCHASE ENTRIES EXIST
-    // ===============================
     const purchaseCheck = await db.query(
       `SELECT SUM(purchase_pkr) AS total
        FROM purchase_entries
@@ -226,9 +232,6 @@ router.delete("/delete/:ref_no", async (req, res) => {
       });
     }
 
-    // ===============================
-    // CHECK IF PAYMENT RECEIVED
-    // ===============================
     const paymentCheck = await db.query(
       `SELECT SUM(amount) AS total
        FROM customer_payments
@@ -243,9 +246,6 @@ router.delete("/delete/:ref_no", async (req, res) => {
       });
     }
 
-    // ===============================
-    // SOFT DELETE
-    // ===============================
     const q = await db.query(
       `
       UPDATE hotels
@@ -268,7 +268,9 @@ router.delete("/delete/:ref_no", async (req, res) => {
   }
 });
 
+// ===================================
 // DELETED VIEW
+// ===================================
 router.get("/get-deleted/:ref_no", async (req, res) => {
   try {
     const { ref_no } = req.params;
@@ -288,7 +290,6 @@ router.get("/get-deleted/:ref_no", async (req, res) => {
 
     const r = q.rows[0];
 
-    // 🔥 ARRAY → OBJECT CONVERSION
     const hotels = (r.hotel_name || []).map((name, i) => ({
       hotel: name || "",
       location: r.hotel_location?.[i] || "",
@@ -301,12 +302,11 @@ router.get("/get-deleted/:ref_no", async (req, res) => {
       checkOut: r.hotel_checkout?.[i] || "",
     }));
 
-    // ✅ FINAL RESPONSE
     res.json({
       success: true,
       row: {
         ...r,
-        hotels, // 🔥 IMPORTANT
+        hotels,
       },
     });
 
@@ -317,4 +317,3 @@ router.get("/get-deleted/:ref_no", async (req, res) => {
 });
 
 module.exports = router;
-

@@ -17,10 +17,10 @@ router.post("/save", async (req, res) => {
   try {
     const {
       ref_no,
-      customer_code,        // ⚡ Naya customer_code accept kiya
+      customer_code,
       customer_name,
       booking_date,
-      flights,              // [{from,to,date,airline}]
+      flights, // [{from,to,date,airline}]
       adultQty,
       adultRate,
       childQty,
@@ -38,6 +38,15 @@ router.post("/save", async (req, res) => {
     // NEW ENTRY
     // ========================
     if (!finalRef) {
+      // ⚡ Auto-fix primary key sequence before inserting new record
+      await db.query(`
+        SELECT setval(
+          COALESCE(pg_get_serial_sequence('ticketing', 'id'), 'ticketing_id_seq'), 
+          COALESCE((SELECT MAX(id) FROM ticketing), 0) + 1, 
+          false
+        );
+      `).catch(() => {});
+
       finalRef = await generateRefNo();
 
       await db.query(
@@ -45,7 +54,7 @@ router.post("/save", async (req, res) => {
         INSERT INTO ticketing
         (
           ref_no,
-          customer_code,    -- ⚡ Added column
+          customer_code,
           customer_name,
           booking_date,
 
@@ -70,14 +79,14 @@ router.post("/save", async (req, res) => {
         `,
         [
           finalRef,
-          customer_code || null, // ⚡ Nullable for manual/walk-in users
+          customer_code || null,
           customer_name,
           booking_date,
 
-          JSON.stringify(flights.map(f => f.from)),
-          JSON.stringify(flights.map(f => f.to)),
-          JSON.stringify(flights.map(f => f.date)),
-          JSON.stringify(flights.map(f => f.airline || "")),
+          JSON.stringify((flights || []).map(f => f.from)),
+          JSON.stringify((flights || []).map(f => f.to)),
+          JSON.stringify((flights || []).map(f => f.date)),
+          JSON.stringify((flights || []).map(f => f.airline || "")),
 
           adultQty,
           adultRate,
@@ -100,7 +109,7 @@ router.post("/save", async (req, res) => {
       await db.query(
         `
         UPDATE ticketing SET
-          customer_code=$1, -- ⚡ Added field update
+          customer_code=$1,
           customer_name=$2,
           booking_date=$3,
 
@@ -126,10 +135,10 @@ router.post("/save", async (req, res) => {
           customer_name,
           booking_date,
 
-          JSON.stringify(flights.map(f => f.from)),
-          JSON.stringify(flights.map(f => f.to)),
-          JSON.stringify(flights.map(f => f.date)),
-          JSON.stringify(flights.map(f => f.airline || "")),
+          JSON.stringify((flights || []).map(f => f.from)),
+          JSON.stringify((flights || []).map(f => f.to)),
+          JSON.stringify((flights || []).map(f => f.date)),
+          JSON.stringify((flights || []).map(f => f.airline || "")),
 
           adultQty,
           adultRate,
@@ -150,7 +159,7 @@ router.post("/save", async (req, res) => {
 
   } catch (err) {
     console.error("TICKETING SAVE ERROR:", err);
-    res.json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -158,15 +167,19 @@ router.post("/save", async (req, res) => {
 // GET BY REF (EDIT / VIEW)
 // ========================
 router.get("/get/:ref", async (req, res) => {
-  const q = await db.query(
-    "SELECT * FROM ticketing WHERE ref_no=$1 AND is_deleted=false",
-    [req.params.ref]
-  );
+  try {
+    const q = await db.query(
+      "SELECT * FROM ticketing WHERE ref_no=$1 AND is_deleted=false",
+      [req.params.ref]
+    );
 
-  if (!q.rows.length)
-    return res.json({ success: false });
+    if (!q.rows.length)
+      return res.json({ success: false });
 
-  res.json({ success: true, row: q.rows[0] });
+    res.json({ success: true, row: q.rows[0] });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // ===================================
@@ -245,7 +258,9 @@ router.delete("/delete/:ref_no", async (req, res) => {
   }
 });
 
+// ========================
 // DELETED VIEW
+// ========================
 router.get("/get-deleted/:ref", async (req, res) => {
   try {
     const q = await db.query(
