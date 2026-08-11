@@ -428,6 +428,343 @@ router.get("/today-restricted", async (req, res) => {
 });
 
 
+/* =====================================================
+   🔹 CUSTOMER SALE DETAIL REPORT (DIRECT FROM SALES TABLES)
+   - Fetches registered active customers from customers table
+===================================================== */
+router.get("/customer-sale", async (req, res) => {
+  try {
+    const rows = [];
+
+    // 1. Registered Active Customers List (From customers table)
+    const custRes = await db.query(
+      `SELECT name FROM customers WHERE is_deleted = false ORDER BY name ASC`
+    );
+    const customerList = custRes.rows.map((c) => c.name);
+
+    // 2. BOOKINGS (PACKAGES)
+    const pkgRes = await db.query(
+      `SELECT * FROM bookings WHERE is_deleted = false ORDER BY booking_date DESC`
+    );
+    pkgRes.rows.forEach((s) => {
+      let airline = "", from = "", to = "";
+      if (Array.isArray(s.flights) && s.flights.length > 0) {
+        const f = s.flights[0];
+        airline = f.airline || f.airline_name || "";
+        from = f.from || f.flight_from || "";
+        to = f.to || f.flight_to || "";
+      }
+      const routeText = from && to ? `${from} → ${to}` : "";
+      const extraInfo = [airline, routeText].filter(Boolean).join(" | ");
+
+      // Tickets
+      if (s.adult_count > 0) {
+        const sar = s.adult_count * s.adult_rate;
+        const rate = Number(s.flight_sar_rate) || 0;
+        rows.push({
+          booking_date: s.booking_date,
+          customer_name: s.customer_name || "Walk-in Customer",
+          ref_no: s.ref_no,
+          item: `Ticket – Adult (${s.adult_count} Person${s.adult_count > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          sale_sar: sar,
+          sale_rate: rate,
+          sale_pkr: sar * rate,
+        });
+      }
+      if (s.child_count > 0) {
+        const sar = s.child_count * s.child_rate;
+        const rate = Number(s.flight_sar_rate) || 0;
+        rows.push({
+          booking_date: s.booking_date,
+          customer_name: s.customer_name || "Walk-in Customer",
+          ref_no: s.ref_no,
+          item: `Ticket – Child (${s.child_count} Person${s.child_count > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          sale_sar: sar,
+          sale_rate: rate,
+          sale_pkr: sar * rate,
+        });
+      }
+      if (s.infant_count > 0) {
+        const sar = s.infant_count * s.infant_rate;
+        const rate = Number(s.flight_sar_rate) || 0;
+        rows.push({
+          booking_date: s.booking_date,
+          customer_name: s.customer_name || "Walk-in Customer",
+          ref_no: s.ref_no,
+          item: `Ticket – Infant (${s.infant_count} Person${s.infant_count > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          sale_sar: sar,
+          sale_rate: rate,
+          sale_pkr: sar * rate,
+        });
+      }
+
+      // Hotels
+      if (Array.isArray(s.hotels)) {
+        s.hotels.forEach((h, i) => {
+          const rooms = Number(h.rooms) || 0;
+          const nights = Number(h.nights) || 0;
+          const type = h.type ? h.type.toUpperCase() : "";
+          const sar = Number(h.total) || 0;
+          const rate = Number(s.hotel_sar_rate) || 0;
+          rows.push({
+            booking_date: s.booking_date,
+            customer_name: s.customer_name || "Walk-in Customer",
+            ref_no: s.ref_no,
+            item: `Hotel ${i + 1} - ${h.hotel || ""} (${type}${type ? ", " : ""}${rooms} Room${rooms > 1 ? "s" : ""}, ${nights} Night${nights > 1 ? "s" : ""})`,
+            sale_sar: sar,
+            sale_rate: rate,
+            sale_pkr: sar * rate,
+          });
+        });
+      }
+
+      // Visa
+      if (Array.isArray(s.visa)) {
+        s.visa.forEach((v, i) => {
+          const persons = Number(v.persons || 0);
+          const rateVal = Number(v.rate || 0);
+          const sar = Number(v.total ?? (persons * rateVal));
+          const rate = Number(s.visa_sar_rate) || 0;
+          rows.push({
+            booking_date: s.booking_date,
+            customer_name: s.customer_name || "Walk-in Customer",
+            ref_no: s.ref_no,
+            item: v.type ? `Visa ${i + 1} - ${v.type} (${persons} Person${persons > 1 ? "s" : ""})` : `Visa ${i + 1} (${persons} Person${persons > 1 ? "s" : ""})`,
+            sale_sar: sar,
+            sale_rate: rate,
+            sale_pkr: sar * rate,
+          });
+        });
+      }
+
+      // Transport
+      if (Array.isArray(s.transport)) {
+        s.transport.forEach((t, i) => {
+          const label = t.text || t.route || t.description || "";
+          const sar = Number(t.amount) || 0;
+          const rate = Number(s.transport_sar_rate) || 0;
+          rows.push({
+            booking_date: s.booking_date,
+            customer_name: s.customer_name || "Walk-in Customer",
+            ref_no: s.ref_no,
+            item: label ? `Transport ${i + 1} - ${label}` : `Transport ${i + 1}`,
+            sale_sar: sar,
+            sale_rate: rate,
+            sale_pkr: sar * rate,
+          });
+        });
+      }
+
+      // Ziyarat
+      if (Array.isArray(s.ziyarat)) {
+        s.ziyarat.forEach((t, i) => {
+          const label = t.text || t.route || t.description || "";
+          const sar = Number(t.amount) || 0;
+          const rate = Number(s.ziyarat_sar_rate) || 0;
+          rows.push({
+            booking_date: s.booking_date,
+            customer_name: s.customer_name || "Walk-in Customer",
+            ref_no: s.ref_no,
+            item: label ? `Ziyarat ${i + 1} - ${label}` : `Ziyarat ${i + 1}`,
+            sale_sar: sar,
+            sale_rate: rate,
+            sale_pkr: sar * rate,
+          });
+        });
+      }
+    });
+
+    // 3. HOTELS ONLY (HOT-)
+    const hotRes = await db.query(
+      `SELECT * FROM hotels WHERE is_deleted = false ORDER BY booking_date DESC`
+    );
+    hotRes.rows.forEach((r) => {
+      (r.hotel_name || []).forEach((name, i) => {
+        const type = r.hotel_type?.[i] ? r.hotel_type[i].toUpperCase() : "";
+        const rooms = Number(r.hotel_rooms?.[i]) || 0;
+        const nights = Number(r.hotel_nights?.[i]) || 0;
+        const sar = Number(r.hotel_total?.[i]) || 0;
+        const rate = Number(r.sar_rate) || 0;
+        rows.push({
+          booking_date: r.booking_date,
+          customer_name: r.customer_name || "Walk-in Customer",
+          ref_no: r.ref_no,
+          item: `Hotel ${i + 1} - ${name} (${type}${type ? ", " : ""}${rooms} Room${rooms > 1 ? "s" : ""}, ${nights} Night${nights > 1 ? "s" : ""})`,
+          sale_sar: sar,
+          sale_rate: rate,
+          sale_pkr: sar * rate,
+        });
+      });
+    });
+
+    // 4. VISA ONLY (VISA-)
+    const visaRes = await db.query(
+      `SELECT * FROM visa WHERE is_deleted = false ORDER BY booking_date DESC`
+    );
+    visaRes.rows.forEach((v) => {
+      (v.rows || []).forEach((r, i) => {
+        const sar = Number(r.total) || Number(r.persons * r.rate) || 0;
+        const rate = Number(v.pkr_rate) || 0;
+        rows.push({
+          booking_date: v.booking_date,
+          customer_name: v.customer_name || "Walk-in Customer",
+          ref_no: v.ref_no,
+          item: r.type ? `Visa ${i + 1} - ${r.type} (${r.persons} Person${r.persons > 1 ? "s" : ""})` : `Visa (${r.persons} Person${r.persons > 1 ? "s" : ""})`,
+          sale_sar: sar,
+          sale_rate: rate,
+          sale_pkr: sar * rate,
+        });
+      });
+    });
+
+    // 5. CARD ONLY (CARD-)
+    const cardRes = await db.query(
+      `SELECT * FROM card WHERE is_deleted = false ORDER BY booking_date DESC`
+    );
+    cardRes.rows.forEach((v) => {
+      (v.rows || []).forEach((r, i) => {
+        const sar = Number(r.total) || Number(r.persons * r.rate) || 0;
+        const rate = Number(v.pkr_rate) || 0;
+        rows.push({
+          booking_date: v.booking_date,
+          customer_name: v.customer_name || "Walk-in Customer",
+          ref_no: v.ref_no,
+          item: r.type ? `Card ${i + 1} - ${r.type} (${r.persons} Person${r.persons > 1 ? "s" : ""})` : `Card (${r.persons} Person${r.persons > 1 ? "s" : ""})`,
+          sale_sar: sar,
+          sale_rate: rate,
+          sale_pkr: sar * rate,
+        });
+      });
+    });
+
+    // 6. GROUPS ONLY (GRP-)
+    const grpRes = await db.query(
+      `SELECT * FROM groups WHERE is_deleted = false ORDER BY booking_date DESC`
+    );
+    grpRes.rows.forEach((v) => {
+      (v.rows || []).forEach((r, i) => {
+        const sar = Number(r.total) || Number(r.persons * r.rate) || 0;
+        const rate = Number(v.pkr_rate) || 0;
+        rows.push({
+          booking_date: v.booking_date,
+          customer_name: v.customer_name || "Walk-in Customer",
+          ref_no: v.ref_no,
+          item: r.type ? `Groups ${i + 1} - ${r.type} (${r.persons} Person${r.persons > 1 ? "s" : ""})` : `Groups (${r.persons} Person${r.persons > 1 ? "s" : ""})`,
+          sale_sar: sar,
+          sale_rate: rate,
+          sale_pkr: sar * rate,
+        });
+      });
+    });
+
+    // 7. TICKETING ONLY (TIC-)
+    const ticRes = await db.query(
+      `SELECT * FROM ticketing WHERE is_deleted = false ORDER BY booking_date DESC`
+    );
+    ticRes.rows.forEach((r) => {
+      const from = Array.isArray(r.flight_from) ? r.flight_from.join(", ") : r.flight_from || "";
+      const to = Array.isArray(r.flight_to) ? r.flight_to.join(", ") : r.flight_to || "";
+      const airline = Array.isArray(r.airline) ? r.airline.join(", ") : r.airline || "";
+      const routeText = from && to ? `${from} → ${to}` : "";
+      const extraInfo = [airline, routeText].filter(Boolean).join(" | ");
+
+      const rate = Number(r.pkr_rate) || 0;
+
+      if (r.adult_qty > 0) {
+        const sar = r.adult_qty * r.adult_rate;
+        rows.push({
+          booking_date: r.booking_date,
+          customer_name: r.customer_name || "Walk-in Customer",
+          ref_no: r.ref_no,
+          item: `Ticket – Adult (${r.adult_qty} Person${r.adult_qty > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          sale_sar: sar,
+          sale_rate: rate,
+          sale_pkr: sar * rate,
+        });
+      }
+      if (r.child_qty > 0) {
+        const sar = r.child_qty * r.child_rate;
+        rows.push({
+          booking_date: r.booking_date,
+          customer_name: r.customer_name || "Walk-in Customer",
+          ref_no: r.ref_no,
+          item: `Ticket – Child (${r.child_qty} Person${r.child_qty > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          sale_sar: sar,
+          sale_rate: rate,
+          sale_pkr: sar * rate,
+        });
+      }
+      if (r.infant_qty > 0) {
+        const sar = r.infant_qty * r.infant_rate;
+        rows.push({
+          booking_date: r.booking_date,
+          customer_name: r.customer_name || "Walk-in Customer",
+          ref_no: r.ref_no,
+          item: `Ticket – Infant (${r.infant_qty} Person${r.infant_qty > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          sale_sar: sar,
+          sale_rate: rate,
+          sale_pkr: sar * rate,
+        });
+      }
+    });
+
+    // 8. TRANSPORT ONLY (TRN-)
+    const trnRes = await db.query(
+      `SELECT * FROM transport WHERE is_deleted = false ORDER BY booking_date DESC`
+    );
+    trnRes.rows.forEach((r) => {
+      if (Array.isArray(r.rows)) {
+        r.rows.forEach((t, i) => {
+          const label = t.description || t.text || t.route || "";
+          const sar = Number(t.sar) || 0;
+          const rate = Number(r.pkr_rate) || 0;
+          rows.push({
+            booking_date: r.booking_date,
+            customer_name: r.customer_name || "Walk-in Customer",
+            ref_no: r.ref_no,
+            item: label ? `Transport ${i + 1} - ${label}` : `Transport ${i + 1}`,
+            sale_sar: sar,
+            sale_rate: rate,
+            sale_pkr: sar * rate,
+          });
+        });
+      }
+    });
+
+    // 9. ZIYARAT ONLY (ZIY-)
+    const ziyRes = await db.query(
+      `SELECT * FROM ziyarat WHERE is_deleted = false ORDER BY booking_date DESC`
+    );
+    ziyRes.rows.forEach((r) => {
+      if (Array.isArray(r.rows)) {
+        r.rows.forEach((t, i) => {
+          const label = t.description || t.text || t.route || "";
+          const sar = Number(t.sar) || 0;
+          const rate = Number(r.pkr_rate) || 0;
+          rows.push({
+            booking_date: r.booking_date,
+            customer_name: r.customer_name || "Walk-in Customer",
+            ref_no: r.ref_no,
+            item: label ? `Ziyarat ${i + 1} - ${label}` : `Ziyarat ${i + 1}`,
+            sale_sar: sar,
+            sale_rate: rate,
+            sale_pkr: sar * rate,
+          });
+        });
+      }
+    });
+
+    res.json({
+      success: true,
+      rows,
+      customers: customerList,
+    });
+  } catch (err) {
+    console.error("CUSTOMER SALE DETAIL REPORT ERROR:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 
 
 module.exports = router;
