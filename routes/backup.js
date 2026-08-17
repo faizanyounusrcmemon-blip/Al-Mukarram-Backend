@@ -29,7 +29,6 @@ const TMP = "/tmp";
 
 /* ================= TABLES ================= */
 const TABLES = [
-  "banks",
   "bookings",
   "expense_ledger",
   "hotels",
@@ -246,19 +245,17 @@ router.post("/restore/full", async (req, res) => {
 
     console.log("SYNCHRONIZING SEQUENCES AFTER FULL RESTORE...");
     
-    // 1. Safe Booking Sequence Sync
+// 1. Safe Booking Sequence Sync
     await client.query(`
       DO $$ BEGIN
         IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname='booking_ref_seq') THEN
           CREATE SEQUENCE booking_ref_seq;
         END IF;
       END $$;
-    `);
-    await client.query(`
       SELECT setval('booking_ref_seq', COALESCE((
         SELECT MAX(CAST(NULLIF(regexp_replace(ref_no, '[^0-9]', '', 'g'), '') AS INTEGER))
         FROM bookings WHERE ref_no IS NOT NULL AND ref_no <> ''
-      ), 0));
+      ), 1), EXISTS(SELECT 1 FROM bookings WHERE ref_no IS NOT NULL AND ref_no <> ''));
     `);
 
     // 2. Safe Supplier Sequence Sync
@@ -268,12 +265,10 @@ router.post("/restore/full", async (req, res) => {
           CREATE SEQUENCE suppliers_code_seq;
         END IF;
       END $$;
-    `);
-    await client.query(`
       SELECT setval('suppliers_code_seq', COALESCE((
         SELECT MAX(CAST(NULLIF(regexp_replace(supplier_code, '[^0-9]', '', 'g'), '') AS INTEGER))
         FROM suppliers WHERE supplier_code IS NOT NULL AND supplier_code <> ''
-      ), 0));
+      ), 1), EXISTS(SELECT 1 FROM suppliers WHERE supplier_code IS NOT NULL AND supplier_code <> ''));
     `);
 
     await client.query("COMMIT");
@@ -579,39 +574,18 @@ router.post("/fix-sequences", async (req, res) => {
     }
 
     const tables = [
-      "banks",
-      "bookings",
-      "expense_ledger",
-      "hotels",
-      "ticketing",
-      "visa",
-      "card",
-      "groups",
-      "transport",
-      "customers",
-      "purchase_entries",
-      "users",
-      "bank_transactions",
-      "cash_transactions",
-      "customer_payments",
-      "suppliers",
-      "purchase_payments",
-      "supplier_payments",
-      "ziyarat",
-      "archive_snapshots",
-      "archive_balances", 
-      "archive_profit_monthly",
-      "archive_logs",
-      "authority_settings",
-      "system_passwords",
+      "bookings", "expense_ledger", "hotels", "ticketing", "visa", "card",
+      "groups", "transport", "customers", "purchase_entries", "users",
+      "bank_transactions", "cash_transactions", "customer_payments", "suppliers",
+      "purchase_payments", "supplier_payments", "ziyarat", "archive_snapshots",
+      "archive_balances", "archive_profit_monthly", "archive_logs",
+      "authority_settings", "system_passwords",
     ];
 
+    // Primary Key (id) Sequences Fix
     for (const table of tables) {
       const seq = await db.query(`
-        SELECT pg_get_serial_sequence(
-          '${table}',
-          'id'
-        ) AS seq
+        SELECT pg_get_serial_sequence('${table}', 'id') AS seq
       `);
 
       const sequenceName = seq.rows[0]?.seq;
@@ -620,13 +594,8 @@ router.post("/fix-sequences", async (req, res) => {
       await db.query(`
         SELECT setval(
           '${sequenceName}',
-          COALESCE(
-            (
-              SELECT MAX(id)
-              FROM ${table}
-            ),
-            1
-          )
+          COALESCE((SELECT MAX(id) FROM ${table}), 1),
+          EXISTS(SELECT 1 FROM ${table})
         );
       `);
     }
@@ -638,14 +607,10 @@ router.post("/fix-sequences", async (req, res) => {
           CREATE SEQUENCE visa_ref_seq;
         END IF;
       END $$;
-    `);
-    await db.query(`
       SELECT setval(
         'visa_ref_seq',
-        COALESCE(
-          (SELECT MAX(CAST(REPLACE(ref_no, 'VISA-', '') AS INTEGER)) FROM visa),
-          0
-        )
+        COALESCE((SELECT MAX(CAST(REPLACE(ref_no, 'VISA-', '') AS INTEGER)) FROM visa WHERE ref_no LIKE 'VISA-%'), 1),
+        EXISTS(SELECT 1 FROM visa WHERE ref_no LIKE 'VISA-%')
       );
     `);
 
@@ -656,14 +621,10 @@ router.post("/fix-sequences", async (req, res) => {
           CREATE SEQUENCE card_ref_seq;
         END IF;
       END $$;
-    `);
-    await db.query(`
       SELECT setval(
         'card_ref_seq',
-        COALESCE(
-          (SELECT MAX(CAST(REPLACE(ref_no, 'CARD-', '') AS INTEGER)) FROM card),
-          0
-        )
+        COALESCE((SELECT MAX(CAST(REPLACE(ref_no, 'CARD-', '') AS INTEGER)) FROM card WHERE ref_no LIKE 'CARD-%'), 1),
+        EXISTS(SELECT 1 FROM card WHERE ref_no LIKE 'CARD-%')
       );
     `);
 
@@ -674,14 +635,10 @@ router.post("/fix-sequences", async (req, res) => {
           CREATE SEQUENCE groups_ref_seq;
         END IF;
       END $$;
-    `);
-    await db.query(`
       SELECT setval(
         'groups_ref_seq',
-        COALESCE(
-          (SELECT MAX(CAST(REPLACE(ref_no, 'GRP-', '') AS INTEGER)) FROM groups),
-          0
-        )
+        COALESCE((SELECT MAX(CAST(REPLACE(ref_no, 'GRP-', '') AS INTEGER)) FROM groups WHERE ref_no LIKE 'GRP-%'), 1),
+        EXISTS(SELECT 1 FROM groups WHERE ref_no LIKE 'GRP-%')
       );
     `);
 
@@ -692,14 +649,10 @@ router.post("/fix-sequences", async (req, res) => {
           CREATE SEQUENCE booking_ref_seq;
         END IF;
       END $$;
-    `);
-    await db.query(`
       SELECT setval(
         'booking_ref_seq',
-        COALESCE(
-          (SELECT MAX(CAST(REPLACE(ref_no, 'PKG-', '') AS INTEGER)) FROM bookings),
-          0
-        )
+        COALESCE((SELECT MAX(CAST(NULLIF(regexp_replace(ref_no, '[^0-9]', '', 'g'), '') AS INTEGER)) FROM bookings WHERE ref_no IS NOT NULL AND ref_no <> ''), 1),
+        EXISTS(SELECT 1 FROM bookings WHERE ref_no IS NOT NULL AND ref_no <> '')
       );
     `);
 
@@ -710,14 +663,10 @@ router.post("/fix-sequences", async (req, res) => {
           CREATE SEQUENCE suppliers_code_seq;
         END IF;
       END $$;
-    `);
-    await db.query(`
       SELECT setval(
         'suppliers_code_seq',
-        COALESCE(
-          (SELECT MAX(CAST(REPLACE(supplier_code, 'SUP-', '') AS INTEGER)) FROM suppliers),
-          0
-        )
+        COALESCE((SELECT MAX(CAST(NULLIF(regexp_replace(supplier_code, '[^0-9]', '', 'g'), '') AS INTEGER)) FROM suppliers WHERE supplier_code IS NOT NULL AND supplier_code <> ''), 1),
+        EXISTS(SELECT 1 FROM suppliers WHERE supplier_code IS NOT NULL AND supplier_code <> '')
       );
     `);
 
@@ -728,17 +677,12 @@ router.post("/fix-sequences", async (req, res) => {
           CREATE SEQUENCE customers_code_seq;
         END IF;
       END $$;
-    `);
-    await db.query(`
       SELECT setval(
         'customers_code_seq',
-        COALESCE(
-          (SELECT MAX(CAST(REPLACE(customer_code, 'CUST-', '') AS INTEGER)) FROM customers),
-          0
-        )
+        COALESCE((SELECT MAX(CAST(NULLIF(regexp_replace(customer_code, '[^0-9]', '', 'g'), '') AS INTEGER)) FROM customers WHERE customer_code IS NOT NULL AND customer_code <> ''), 1),
+        EXISTS(SELECT 1 FROM customers WHERE customer_code IS NOT NULL AND customer_code <> '')
       );
     `);
-
 
     return res.json({
       success: true,
