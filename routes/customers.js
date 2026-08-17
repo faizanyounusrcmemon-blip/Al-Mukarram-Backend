@@ -62,7 +62,7 @@ router.get("/list", async (req, res) => {
       params.push(`%${search.trim()}%`);
     }
 
-    query += ` ORDER BY name ASC`;
+    query += ` ORDER BY customer_code ASC`;
 
     const q = await db.query(query, params);
     res.json({ success: true, rows: q.rows });
