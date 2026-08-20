@@ -2,8 +2,12 @@ const express = require("express");
 const router = express.Router();
 const db = require("../db");
 
-// AUTO REF
+// AUTO REF (SAFE VERSION)
 async function generateRef() {
+  await db.query(`
+    CREATE SEQUENCE IF NOT EXISTS ziyarat_ref_seq START WITH 1 INCREMENT BY 1;
+  `);
+
   const q = await db.query("SELECT nextval('ziyarat_ref_seq') AS no");
   return "ZIY-" + String(q.rows[0].no).padStart(5, "0");
 }

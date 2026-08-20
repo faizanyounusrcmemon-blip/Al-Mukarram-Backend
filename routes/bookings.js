@@ -3,9 +3,14 @@ const router = express.Router();
 const db = require("../db");
 
 // ============================================
-// AUTO REF NO GENERATOR
+// AUTO REF NO GENERATOR (SAFE VERSION)
 // ============================================
 async function generateRefNo() {
+  // Ensure the sequence exists before querying it
+  await db.query(`
+    CREATE SEQUENCE IF NOT EXISTS booking_ref_seq START WITH 1 INCREMENT BY 1;
+  `);
+
   const q = await db.query("SELECT nextval('booking_ref_seq') AS no");
   const no = q.rows[0].no;
   return "PKG-" + String(no).padStart(5, "0");
