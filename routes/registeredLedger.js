@@ -160,34 +160,38 @@ router.get("/detail/:customer_code", async (req, res) => {
       });
     });
 
-    // Payments -> Debit (-)
-    paymentsRes.rows.forEach(p => {
-      const amt = Math.round(Number(p.amount || 0));
-      let methodDesc = p.payment_method || "";
-      if (p.payment_method?.toLowerCase() === "bank" && p.bank_name) {
-        methodDesc = `Bank: ${p.bank_name}`;
-      }
+// Payments -> Debit (-)
+paymentsRes.rows.forEach(p => {
+  const amt = Math.round(Number(p.amount || 0));
+  let methodDesc = p.payment_method || "";
+  if (p.payment_method?.toLowerCase() === "bank" && p.bank_name) {
+    methodDesc = `Bank: ${p.bank_name}`;
+  }
 
-      if (p.type === "opening_balance") {
-        allEntries.push({
-          id: p.id,
-          date: p.payment_date,
-          description: `🔑 Opening Balance`,
-          debit: 0,
-          credit: amt,
-          type: "opening_balance"
-        });
-      } else {
-        allEntries.push({
-          id: p.id,
-          date: p.payment_date,
-          description: p.type === "adjustment" ? `Adjustment (${methodDesc})` : `Payment Received (${methodDesc})`,
-          debit: amt,
-          credit: 0,
-          type: "payment"
-        });
-      }
+  if (p.type === "opening_balance") {
+    allEntries.push({
+      id: p.id,
+      date: p.payment_date,
+      description: `🔑 Opening Balance`,
+      debit: 0,
+      credit: amt,
+      type: "opening_balance",
+      payment_method: p.payment_method || "-", // 👈 Add this line
+      bank_name: p.bank_name || null           // 👈 Add this line
     });
+  } else {
+    allEntries.push({
+      id: p.id,
+      date: p.payment_date,
+      description: p.type === "adjustment" ? `Adjustment (${methodDesc})` : `Payment Received (${methodDesc})`,
+      debit: amt,
+      credit: 0,
+      type: "payment",
+      payment_method: p.payment_method || "-", // 👈 Add this line
+      bank_name: p.bank_name || null           // 👈 Add this line
+    });
+  }
+});
 
     // Pehle Ascending Sort (Chronological)
     allEntries.sort((a, b) => new Date(a.date) - new Date(b.date));

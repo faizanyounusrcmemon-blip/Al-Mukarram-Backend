@@ -324,14 +324,16 @@ router.get("/:ref_no", async (req, res) => {
         methodDesc = "Bank";
       }
 
-      rows.push({
-        id: p.id,
-        date: p.payment_date,
-        description: p.type === "adjustment" ? "Adjustment" : `Payment Received (${methodDesc})`,
-        debit: amount,
-        credit: 0,
-        balance
-      });
+rows.push({
+  id: p.id,
+  date: p.payment_date,
+  description: p.type === "adjustment" ? "Adjustment" : `Payment Received (${methodDesc})`,
+  debit: amount,
+  credit: 0,
+  balance,
+  payment_method: p.payment_method || "-", // 👈 Yeh Add karein
+  bank_name: p.bank_name || null           // 👈 Yeh Add karein
+});
     });
 
     res.json({
