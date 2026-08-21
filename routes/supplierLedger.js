@@ -154,12 +154,39 @@ router.delete("/delete/:entryId", async (req, res) => {
 });
 
 /* ====================================================
-   EDIT LEDGER ENTRY (FIXED TYPE UPDATE)
+   VERIFY PASSWORD ROUTE (STEP 1)
+==================================================== */
+router.post("/verify-password", async (req, res) => {
+  try {
+    const { password } = req.body;
+
+    const passCheck = await db.query(
+      "SELECT password_val FROM system_passwords WHERE key_name = $1", 
+      ['delete_supplier_payment']
+    );
+
+    if (passCheck.rows.length === 0) {
+      return res.json({ success: false, error: "System password not configured in database!" });
+    }
+
+    if (password !== passCheck.rows[0].password_val) {
+      return res.json({ success: false, error: "Incorrect Password!" });
+    }
+
+    res.json({ success: true, message: "Password verified" });
+  } catch (e) {
+    console.error("Verify password error:", e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+/* ====================================================
+   EDIT LEDGER ENTRY (STEP 2 SUBMIT)
 ==================================================== */
 router.put("/edit/:entryId", async (req, res) => {
   try {
     const { entryId } = req.params;
-    const { password, amount, payment_date, payment_method, bank_profile_id, type } = req.body;
+    const { amount, payment_date, payment_method, bank_profile_id, type } = req.body;
 
     if (!entryId || isNaN(entryId)) {
       return res.json({ success: false, error: "Invalid entry ID" });
@@ -169,22 +196,8 @@ router.put("/edit/:entryId", async (req, res) => {
       return res.json({ success: false, error: "Invalid amount" });
     }
 
-    // Type Check Validation
     if (!type) {
       return res.json({ success: false, error: "Type is required" });
-    }
-
-    const passCheck = await db.query(
-      "SELECT password_val FROM system_passwords WHERE key_name = $1", 
-      ['delete_supplier_payment']
-    );
-    
-    if (passCheck.rows.length === 0) {
-      return res.json({ success: false, error: "System password not configured in database!" });
-    }
-
-    if (password !== passCheck.rows[0].password_val) {
-      return res.json({ success: false, error: "Wrong password" });
     }
 
     const check = await db.query(
@@ -196,7 +209,6 @@ router.put("/edit/:entryId", async (req, res) => {
       return res.json({ success: false, error: "Payment entry not found" });
     }
 
-    // COALESCE ensures if type is passed it updates, otherwise keeps old value
     await db.query(`
       UPDATE supplier_payments 
       SET 

@@ -53,30 +53,39 @@ router.post("/add", async (req, res) => {
   }
 });
 
-/* ================= UPDATE EXPENSE (WITH PASSWORD CHECK) ================= */
-router.put("/update/:id", async (req, res) => {
+/* ================= VERIFY PASSWORD ROUTE (STEP 1) ================= */
+router.post("/verify-password", async (req, res) => {
   try {
-    const { id } = req.params;
-    const { expense_date, title, amount, payment_method, bank_profile_id, remarks, password } = req.body;
+    const { password } = req.body;
 
-    if (!expense_date || !title || !amount || !payment_method) {
-      return res.json({ success: false, error: "Missing required fields" });
-    }
-
-    // Password Verification (Using the same key 'delete_expense_record')
     const passCheck = await db.query(
       "SELECT password_val FROM system_passwords WHERE key_name = $1", 
-      ['delete_expense_record'] 
+      ['delete_expense_record']
     );
-    
+
     if (passCheck.rows.length === 0) {
       return res.json({ success: false, error: "System password not configured in database!" });
     }
 
-    const dbPassword = passCheck.rows[0].password_val;
+    if (password !== passCheck.rows[0].password_val) {
+      return res.json({ success: false, error: "Incorrect Password!" });
+    }
 
-    if (password !== dbPassword) {
-      return res.json({ success: false, error: "Wrong password" });
+    res.json({ success: true, message: "Password verified" });
+  } catch (err) {
+    console.error("Verify password error:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/* ================= UPDATE EXPENSE (STEP 2 SUBMIT) ================= */
+router.put("/update/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { expense_date, title, amount, payment_method, bank_profile_id, remarks } = req.body;
+
+    if (!expense_date || !title || !amount || !payment_method) {
+      return res.json({ success: false, error: "Missing required fields" });
     }
 
     await db.query(

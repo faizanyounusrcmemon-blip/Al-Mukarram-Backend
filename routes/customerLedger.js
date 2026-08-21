@@ -446,12 +446,41 @@ router.delete("/delete/:id", async (req, res) => {
 });
 
 /* =====================================================
-   EDIT CUSTOMER PAYMENT
+   VERIFY PASSWORD FOR EDIT (STEP 1)
+===================================================== */
+router.post("/verify-password", async (req, res) => {
+  try {
+    const { password } = req.body;
+
+    const passCheck = await db.query(
+      "SELECT password_val FROM system_passwords WHERE key_name = $1",
+      ["delete_customer_payment"]
+    );
+
+    if (passCheck.rows.length === 0) {
+      return res.json({ success: false, error: "System password not configured in database!" });
+    }
+
+    const dbPassword = passCheck.rows[0].password_val;
+
+    if (password !== dbPassword) {
+      return res.json({ success: false, error: "Incorrect Password!" });
+    }
+
+    res.json({ success: true, message: "Password verified" });
+  } catch (err) {
+    console.error("CUSTOMER LEDGER VERIFY PASSWORD ERROR:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/* =====================================================
+   EDIT CUSTOMER PAYMENT (STEP 2 SUBMIT)
 ===================================================== */
 router.put("/edit/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const { password, amount, payment_date, payment_method, bank_profile_id, type } = req.body;
+    const { amount, payment_date, payment_method, bank_profile_id, type } = req.body;
 
     if (!id || isNaN(id)) {
       return res.json({ success: false, error: "Invalid payment ID" });
@@ -463,19 +492,6 @@ router.put("/edit/:id", async (req, res) => {
 
     if (!payment_date) {
       return res.json({ success: false, error: "Payment date is required" });
-    }
-
-    const passCheck = await db.query(
-      "SELECT password_val FROM system_passwords WHERE key_name = $1",
-      ["delete_customer_payment"]
-    );
-
-    if (passCheck.rows.length === 0) {
-      return res.json({ success: false, error: "Authorization password not configured in system_passwords table!" });
-    }
-
-    if (password !== passCheck.rows[0].password_val) {
-      return res.json({ success: false, error: "Wrong Password!" });
     }
 
     const client = await db.connect();

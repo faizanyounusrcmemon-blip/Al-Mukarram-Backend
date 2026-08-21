@@ -230,21 +230,42 @@ router.delete("/transaction/:id", async (req, res) => {
   }
 });
 
-/* ======================================================
-   EDIT MANUAL BANK TRANSACTION
-====================================================== */
-router.put("/transaction/:id", async (req, res) => {
+/* ================= VERIFY PASSWORD ROUTE (STEP 1) ================= */
+router.post("/verify-password", async (req, res) => {
   try {
-    const { id } = req.params;
-    const { txn_date, type, amount, comment, bank_profile_id, password } = req.body;
+    const { password } = req.body;
 
     const passCheck = await pool.query(
       "SELECT password_val FROM system_passwords WHERE key_name = $1",
       ["delete_bank_transaction"]
     );
 
-    if (passCheck.rows.length === 0 || password !== passCheck.rows[0].password_val) {
-      return res.json({ success: false, error: "Wrong or Unconfigured Authorization Password!" });
+    if (passCheck.rows.length === 0) {
+      return res.json({
+        success: false,
+        error: "System authorization password not configured in database!",
+      });
+    }
+
+    if (password !== passCheck.rows[0].password_val) {
+      return res.json({ success: false, error: "Incorrect Password!" });
+    }
+
+    res.json({ success: true, message: "Password verified successfully" });
+  } catch (err) {
+    console.error("Password verification error:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/* ================= EDIT MANUAL BANK TRANSACTION (STEP 2) ================= */
+router.put("/transaction/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { txn_date, type, amount, comment, bank_profile_id } = req.body;
+
+    if (!txn_date || !type || !amount || !bank_profile_id) {
+      return res.json({ success: false, error: "Missing required fields" });
     }
 
     await pool.query(

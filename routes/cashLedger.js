@@ -228,13 +228,47 @@ router.delete("/transaction/:id", async (req, res) => {
   }
 });
 
-/* ======================================================
-   EDIT MANUAL CASH TRANSACTION (DYNAMIC DB PASSWORD CHECK)
-====================================================== */
+/* ================= VERIFY PASSWORD ROUTE (STEP 1) ================= */
+router.post("/verify-password", async (req, res) => {
+  try {
+    const { password } = req.body;
+
+    const passCheck = await pool.query(
+      "SELECT password_val FROM system_passwords WHERE key_name = $1",
+      ["delete_cash_transaction"]
+    );
+
+    if (passCheck.rows.length === 0) {
+      return res.json({
+        success: false,
+        error: "System password not configured in database!",
+      });
+    }
+
+    const dbPassword = passCheck.rows[0].password_val;
+
+    if (password !== dbPassword) {
+      return res.json({
+        success: false,
+        error: "Incorrect Password!",
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Password verified",
+    });
+  } catch (err) {
+    console.error("CASH LEDGER VERIFY PASSWORD ERROR:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/* ================= EDIT MANUAL CASH TRANSACTION (STEP 2 SUBMIT) ================= */
 router.put("/transaction/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const { txn_date, type, amount, comment, password } = req.body;
+    const { txn_date, type, amount, comment } = req.body;
 
     if (!id || isNaN(id)) {
       return res.json({ success: false, error: "Invalid transaction ID" });
@@ -248,19 +282,6 @@ router.put("/transaction/:id", async (req, res) => {
       return res.json({ success: false, error: "Amount must be greater than zero" });
     }
 
-    const passCheck = await pool.query(
-      "SELECT password_val FROM system_passwords WHERE key_name = $1",
-      ["delete_cash_transaction"]
-    );
-
-    if (passCheck.rows.length === 0) {
-      return res.json({ success: false, error: "System password not configured in database!" });
-    }
-
-    if (password !== passCheck.rows[0].password_val) {
-      return res.json({ success: false, error: "Wrong Password!" });
-    }
-
     await pool.query(
       `
       UPDATE cash_transactions
@@ -272,13 +293,13 @@ router.put("/transaction/:id", async (req, res) => {
 
     res.json({
       success: true,
-      message: "Transaction updated successfully"
+      message: "Transaction updated successfully",
     });
   } catch (err) {
     console.error("CASH LEDGER EDIT ERROR:", err);
     res.json({
       success: false,
-      error: err.message
+      error: err.message,
     });
   }
 });

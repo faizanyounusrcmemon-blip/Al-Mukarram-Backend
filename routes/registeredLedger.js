@@ -152,7 +152,6 @@ router.get("/detail/:customer_code", async (req, res) => {
     salesRes.rows.forEach(s => {
       allEntries.push({
         id: `SALE-${s.ref_no}`,
-        db_id: s.ref_no,
         date: s.booking_date,
         description: `Sale Invoice (${s.src}) - Ref: ${s.ref_no}`,
         debit: 0,
@@ -172,7 +171,6 @@ router.get("/detail/:customer_code", async (req, res) => {
       if (p.type === "opening_balance") {
         allEntries.push({
           id: p.id,
-          db_id: p.id,
           date: p.payment_date,
           description: `🔑 Opening Balance`,
           debit: 0,
@@ -182,7 +180,6 @@ router.get("/detail/:customer_code", async (req, res) => {
       } else {
         allEntries.push({
           id: p.id,
-          db_id: p.id,
           date: p.payment_date,
           description: p.type === "adjustment" ? `Adjustment (${methodDesc})` : `Payment Received (${methodDesc})`,
           debit: amt,
@@ -192,24 +189,8 @@ router.get("/detail/:customer_code", async (req, res) => {
       }
     });
 
-    // 1. ASCENDING SORT WITH STABLE TIE-BREAKER
-    // Order Priority: Opening Balance (1) -> Sales (2) -> Payments (3)
-    const typePriority = { opening_balance: 1, sale: 2, payment: 3 };
-
-    allEntries.sort((a, b) => {
-      const dateA = new Date(a.date).getTime();
-      const dateB = new Date(b.date).getTime();
-      
-      if (dateA !== dateB) return dateA - dateB;
-
-      // Same Date: Opening balance -> Sales -> Payments
-      const priorityA = typePriority[a.type] || 99;
-      const priorityB = typePriority[b.type] || 99;
-      if (priorityA !== priorityB) return priorityA - priorityB;
-
-      // Secondary tie-breaker by DB ID / ID string
-      return String(a.db_id).localeCompare(String(b.db_id));
-    });
+    // Pehle Ascending Sort (Chronological)
+    allEntries.sort((a, b) => new Date(a.date) - new Date(b.date));
 
     let runningBalance = 0;
     let calculatedRows = [];
@@ -228,7 +209,6 @@ router.get("/detail/:customer_code", async (req, res) => {
       });
     }
 
-    // Calculate Running Balance Chronologically
     allEntries.forEach((entry) => {
       runningBalance = runningBalance + entry.credit - entry.debit;
 
@@ -244,8 +224,8 @@ router.get("/detail/:customer_code", async (req, res) => {
       }
     });
 
-    // 2. UI DISPLAY REVERSE (Strictly reverse calculated chronological array)
-    calculatedRows.reverse();
+    // UI View ke liye Descending Sort
+    calculatedRows.sort((a, b) => new Date(b.date) - new Date(a.date));
 
     res.json({
       success: true,
@@ -386,29 +366,33 @@ router.get("/pending/list", async (req, res) => {
         a.total_paid
       FROM aggregated a
       LEFT JOIN customer_names n ON a.customer_code = n.customer_code
-      WHERE (a.snapshot_bal + a.total_sale - a.total_paid) != 0
+      /* FIX 1: PostgreSQL level par double precision / floating point zero issue handle kiya gaya */
+      WHERE ROUND((a.snapshot_bal + a.total_sale - a.total_paid)::numeric, 2) != 0
       `,
       [validCustomerCodes, snapshotId, snapshotDateTo]
     );
 
-    let pending = result.rows.map(row => {
-      const balance = Math.round(Number(row.remaining_balance));
-      const totalPaid = Number(row.total_paid);
-      let status = "PARTIAL";
+    let pending = result.rows
+      .map(row => {
+        const balance = Math.round(Number(row.remaining_balance));
+        const totalPaid = Number(row.total_paid);
+        let status = "PARTIAL";
 
-      if (balance > 0) {
-        status = totalPaid === 0 ? "PENDING" : "PARTIAL";
-      } else if (balance < 0) {
-        status = "EXTRA PAID";
-      }
+        if (balance > 0) {
+          status = totalPaid === 0 ? "PENDING" : "PARTIAL";
+        } else if (balance < 0) {
+          status = "EXTRA PAID";
+        }
 
-      return {
-        customer_code: row.customer_code,
-        customer_name: row.customer_name,
-        remaining_balance: balance,
-        payment_status: status
-      };
-    });
+        return {
+          customer_code: row.customer_code,
+          customer_name: row.customer_name,
+          remaining_balance: balance,
+          payment_status: status
+        };
+      })
+      /* FIX 2: Double security ke liye JS level par bhi 0 balance walay filter kar diye */
+      .filter(item => item.remaining_balance !== 0);
 
     res.json({ success: true, rows: pending });
   } catch (err) {
@@ -416,6 +400,8 @@ router.get("/pending/list", async (req, res) => {
     res.json({ success: false, error: err.message });
   }
 });
+
+
 
 /* =====================================================
    3. SAVE REGISTERED CUSTOMER PAYMENT / OPENING BALANCE
@@ -478,20 +464,11 @@ router.post("/delete/:id", async (req, res) => {
 });
 
 /* =====================================================
-   5. EDIT PAYMENT / ENTRY
+   VERIFY PASSWORD ROUTE (STEP 1)
 ===================================================== */
-router.put("/edit/:id", async (req, res) => {
+router.post("/verify-password", async (req, res) => {
   try {
-    const { id } = req.params;
-    const { password, amount, payment_date, payment_method, bank_profile_id, type } = req.body;
-
-    if (!id || isNaN(id)) {
-      return res.json({ success: false, error: "Invalid transaction ID" });
-    }
-
-    if (!amount || Number(amount) <= 0) {
-      return res.json({ success: false, error: "Amount must be greater than zero" });
-    }
+    const { password } = req.body;
 
     const passCheck = await db.query(
       "SELECT password_val FROM system_passwords WHERE key_name = $1",
@@ -499,11 +476,33 @@ router.put("/edit/:id", async (req, res) => {
     );
 
     if (passCheck.rows.length === 0) {
-      return res.json({ success: false, error: "Delete/Edit Password is not configured in DB." });
+      return res.json({ success: false, error: "Password is not configured in DB." });
     }
 
     if (password !== passCheck.rows[0].password_val) {
       return res.json({ success: false, error: "Invalid Authorization Password!" });
+    }
+
+    res.json({ success: true, message: "Password verified successfully!" });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+/* =====================================================
+   5. EDIT PAYMENT / ENTRY (STEP 2 SUBMIT)
+===================================================== */
+router.put("/edit/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { amount, payment_date, payment_method, bank_profile_id, type } = req.body;
+
+    if (!id || isNaN(id)) {
+      return res.json({ success: false, error: "Invalid transaction ID" });
+    }
+
+    if (!amount || Number(amount) <= 0) {
+      return res.json({ success: false, error: "Amount must be greater than zero" });
     }
 
     const check = await db.query("SELECT id FROM customer_payments WHERE id = $1", [id]);
