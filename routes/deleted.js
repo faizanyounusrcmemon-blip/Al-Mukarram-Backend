@@ -104,87 +104,149 @@ router.get("/list", async (req, res) => {
 });
 
 /* =====================================================
-   ♻ RESTORE RECORD ROUTE (WITH PURCHASE CHECK)
+    NAV RESTORE RECORD ROUTE (COMPLETE & FIXED)
 ===================================================== */
 router.post("/restore", async (req, res) => {
   try {
     const { type, ref_no, password } = req.body;
 
     if (!password) {
-      return res.json({ success: false, error: "Password required" });
+      return res.status(400).json({ success: false, error: "Password required" });
     }
 
     // 🔑 DB Lookup for Restore Password
     const passCheck = await db.query(
       "SELECT password_val FROM public.system_passwords WHERE key_name = 'restore_report_pass'"
     );
-    
+
     if (passCheck.rows.length === 0) {
-      return res.json({ success: false, error: "Restore password configuration missing in DB!" });
+      return res.status(500).json({ success: false, error: "Restore password configuration missing in DB!" });
     }
 
     if (password !== passCheck.rows[0].password_val) {
-      return res.json({ success: false, error: "Invalid password" });
+      return res.status(401).json({ success: false, error: "Invalid password" });
     }
 
+    const uppercaseType = type?.toUpperCase();
+
     // ---------------------------------------------------------
-    // 🔍 PURCHASE SPECIFIC CHECK: Duplicate Active Purchase Check
+    // 🛑 PURCHASE RESTORE VALIDATION & EXECUTION
     // ---------------------------------------------------------
-    if (type === "PURCHASE") {
+    if (uppercaseType === "PURCHASE") {
+      // 1. Check duplicate active purchase
       const activeCheck = await db.query(
         `SELECT id FROM purchase_entries WHERE ref_no = $1 AND is_deleted = false LIMIT 1`,
         [ref_no]
       );
 
       if (activeCheck.rows.length > 0) {
-        return res.json({
+        return res.status(400).json({
           success: false,
-          error: `Ref No (${ref_no}) ki purchase pehle se active mojood hai. Duplicate restore allow nahi hai!`
+          error: `Ref No (${ref_no}) ki purchase pehle se active hai. Duplicate restore allow nahi hai!`
         });
       }
+
+      // 2. Fetch deleted purchase totals
+      const deletedPurchase = await db.query(
+        `SELECT ref_no, SUM(sale_pkr) AS purchase_sale_pkr 
+         FROM purchase_entries 
+         WHERE ref_no = $1 AND is_deleted = true 
+         GROUP BY ref_no`,
+        [ref_no]
+      );
+
+      if (deletedPurchase.rows.length === 0) {
+        return res.status(404).json({ success: false, error: "Deleted purchase entry record nahi mila!" });
+      }
+
+      // 3. Parent Active Sale Match Check
+      const activeSaleCheck = await db.query(
+        `
+        SELECT ref_no, total_pkr FROM (
+          SELECT ref_no, total_pkr FROM bookings WHERE ref_no = $1 AND is_deleted = false
+          UNION ALL
+          SELECT ref_no, total_pkr FROM hotels WHERE ref_no = $1 AND is_deleted = false
+          UNION ALL
+          SELECT ref_no, total_pkr FROM ticketing WHERE ref_no = $1 AND is_deleted = false
+          UNION ALL
+          SELECT ref_no, total_pkr FROM visa WHERE ref_no = $1 AND is_deleted = false
+          UNION ALL
+          SELECT ref_no, total_pkr FROM card WHERE ref_no = $1 AND is_deleted = false
+          UNION ALL
+          SELECT ref_no, total_pkr FROM groups WHERE ref_no = $1 AND is_deleted = false
+          UNION ALL
+          SELECT ref_no, total_pkr FROM transport WHERE ref_no = $1 AND is_deleted = false
+          UNION ALL
+          SELECT ref_no, total_pkr FROM ziyarat WHERE ref_no = $1 AND is_deleted = false
+        ) active_sales LIMIT 1;
+        `,
+        [ref_no]
+      );
+
+      if (activeSaleCheck.rows.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: `Is Purchase ki main Sale active nahi hai (delete ho chuki hai). Restore allow nahi hai!`
+        });
+      }
+
+      // 4. Amount match validation
+      const activeSalePkr = Number(activeSaleCheck.rows[0].total_pkr || 0);
+      const purchaseSalePkr = Number(deletedPurchase.rows[0].purchase_sale_pkr || 0);
+
+      if (Math.abs(activeSalePkr - purchaseSalePkr) > 1) {
+        return res.status(400).json({
+          success: false,
+          error: `Main Sale me change/modification ho chuki hai! Active Sale Amount (${activeSalePkr.toLocaleString()}) aur Purchase Sale Amount (${purchaseSalePkr.toLocaleString()}) match nahi kar rahe.`
+        });
+      }
+
+      // 5. UPDATE Purchase Entry in DB
+      const updateResult = await db.query(
+        `UPDATE purchase_entries SET is_deleted = false WHERE ref_no = $1 AND is_deleted = true`,
+        [ref_no]
+      );
+
+      if (updateResult.rowCount === 0) {
+        return res.status(400).json({ success: false, error: "Record restore nahi ho saka." });
+      }
+
+      return res.json({ success: true, message: `Purchase ${ref_no} successfully restored.` });
     }
 
-    let table = "";
-    let lookupColumn = "ref_no";
+    // ---------------------------------------------------------
+    // 🛑 ALL OTHER TYPES RESTORE EXECUTION (PACKAGE, HOTEL, VISA, ETC)
+    // ---------------------------------------------------------
+    let tableName = "";
+    if (uppercaseType === "PACKAGE") tableName = "bookings";
+    else if (uppercaseType === "HOTEL") tableName = "hotels";
+    else if (uppercaseType === "TICKETING") tableName = "ticketing";
+    else if (uppercaseType === "TRANSPORT") tableName = "transport";
+    else if (uppercaseType === "ZIYARAT") tableName = "ziyarat";
+    else if (uppercaseType === "VISA") tableName = "visa";
+    else if (uppercaseType === "CARD") tableName = "card";
+    else if (uppercaseType === "GROUPS") tableName = "groups";
+    else if (uppercaseType === "SUPPLIER") tableName = "suppliers";
+    else if (uppercaseType === "CUSTOMER") tableName = "customers";
 
-    if (type === "PACKAGE") table = "bookings";
-    else if (type === "HOTEL") table = "hotels";
-    else if (type === "TICKETING") table = "ticketing";
-    else if (type === "VISA") table = "visa";
-    else if (type === "CARD") table = "card";
-    else if (type === "GROUPS") table = "groups";
-    else if (type === "TRANSPORT") table = "transport";
-    else if (type === "ZIYARAT") table = "ziyarat";
-    else if (type === "PURCHASE") table = "purchase_entries";
-    else if (type === "SUPPLIER") {
-      table = "suppliers";
-      lookupColumn = "supplier_code";
-    } else if (type === "CUSTOMER") {
-      table = "customers";
-      lookupColumn = "customer_code";
-    } else {
-      return res.json({ success: false, error: "Invalid type" });
+    if (!tableName) {
+      return res.status(400).json({ success: false, error: "Invalid record type!" });
     }
 
-    const q = await db.query(
-      `
-      UPDATE ${table}
-      SET is_deleted = false
-      WHERE ${lookupColumn} = $1
-        AND is_deleted = true
-      RETURNING ${lookupColumn} AS ref_no
-      `,
+    const restoreRes = await db.query(
+      `UPDATE ${tableName} SET is_deleted = false WHERE ref_no = $1 AND is_deleted = true`,
       [ref_no]
     );
 
-    if (!q.rows.length) {
-      return res.json({ success: false, error: "Record not found or already active" });
+    if (restoreRes.rowCount === 0) {
+      return res.status(404).json({ success: false, error: "Record delete status me nahi mila!" });
     }
 
-    res.json({ success: true, message: "Record restored successfully" });
+    return res.json({ success: true, message: `${ref_no} successfully restored.` });
+
   } catch (err) {
     console.error("RESTORE ERROR:", err);
-    res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
