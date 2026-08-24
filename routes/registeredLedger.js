@@ -193,50 +193,53 @@ paymentsRes.rows.forEach(p => {
   }
 });
 
-    // Pehle Ascending Sort (Chronological)
-    allEntries.sort((a, b) => new Date(a.date) - new Date(b.date));
+// 1. Array ko Chronological (Ascending) Order me calculate karein:
+allEntries.sort((a, b) => new Date(a.date) - new Date(b.date));
 
-    let runningBalance = 0;
-    let calculatedRows = [];
+let runningBalance = hasSnapshot ? customerBaseline : 0;
+let computedList = [];
 
-    // Inject Snapshot Baseline First
-    if (hasSnapshot) {
-      runningBalance = customerBaseline;
-      calculatedRows.push({
-        id: "SNAPSHOT_OPENING",
-        date: snapshotDateTo,
-        description: `🔑 Archived Snapshot Customer Balance (${snapshotDateTo})`,
-        debit: customerBaseline < 0 ? Math.abs(customerBaseline) : 0,
-        credit: customerBaseline >= 0 ? customerBaseline : 0,
-        type: "snapshot",
-        balance: runningBalance
-      });
-    }
+if (hasSnapshot) {
+  computedList.push({
+    id: "SNAPSHOT_OPENING",
+    date: snapshotDateTo,
+    description: `Opening Snapshot Balance (${snapshotDateTo})`,
+    debit: customerBaseline < 0 ? Math.abs(customerBaseline) : 0,
+    credit: customerBaseline >= 0 ? customerBaseline : 0,
+    type: "snapshot",
+    balance: runningBalance
+  });
+}
 
-    allEntries.forEach((entry) => {
-      runningBalance = runningBalance + entry.credit - entry.debit;
+allEntries.forEach((entry) => {
+  runningBalance = runningBalance + entry.credit - entry.debit;
 
-      let matchDate = true;
-      if (startDate && new Date(entry.date) < new Date(startDate)) matchDate = false;
-      if (endDate && new Date(entry.date) > new Date(endDate)) matchDate = false;
+  let matchDate = true;
+  if (startDate && new Date(entry.date) < new Date(startDate)) matchDate = false;
+  if (endDate && new Date(entry.date) > new Date(endDate)) matchDate = false;
 
-      if (matchDate) {
-        calculatedRows.push({
-          ...entry,
-          balance: runningBalance
-        });
-      }
+  if (matchDate) {
+    computedList.push({
+      ...entry,
+      balance: runningBalance
     });
+  }
+});
 
-    // UI View ke liye Descending Sort
-    calculatedRows.sort((a, b) => new Date(b.date) - new Date(a.date));
+// 2. Clear Sorting Rule for UI (Latest dates at top)
+// Target: Date DESC, ID DESC (for same day transactions)
+computedList.sort((a, b) => {
+  const dateDiff = new Date(b.date) - new Date(a.date);
+  if (dateDiff !== 0) return dateDiff;
+  return String(b.id).localeCompare(String(a.id));
+});
 
-    res.json({
-      success: true,
-      customerName,
-      rows: calculatedRows,
-      totalRemainingBalance: runningBalance
-    });
+res.json({
+  success: true,
+  customerName,
+  rows: computedList,
+  totalRemainingBalance: runningBalance
+});
 
   } catch (err) {
     console.error(err);
