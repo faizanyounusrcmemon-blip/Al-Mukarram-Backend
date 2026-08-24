@@ -134,79 +134,7 @@ router.get("/detail/:customer_code", async (req, res) => {
       [customer_code, snapshotDateTo]
     );
 
-// Load Live Payments after snapshot
-    const paymentsRes = await db.query(
-      `
-      SELECT cp.id, cp.payment_date, cp.amount, cp.type, cp.payment_method, cp.bank_profile_id, b.bank_name
-      FROM customer_payments cp
-      LEFT JOIN public.banks b ON b.id = cp.bank_profile_id
-      WHERE cp.ref_no = $1 AND cp.payment_date::date > $2::date
-      ORDER BY cp.payment_date, cp.id
-      `,
-      [customer_code, snapshotDateTo]
-    );
 
-    let allEntries = [];
-
-    // Sales -> Credit (+)
-    salesRes.rows.forEach(s => {
-      allEntries.push({
-        id: `SALE-${s.ref_no}`,
-        date: s.booking_date,
-        description: `Sale Invoice (${s.src}) - Ref: ${s.ref_no}`,
-        debit: 0,
-        credit: Math.round(Number(s.total_pkr || 0)),
-        type: "sale"
-      });
-    });
-
-    // Payments -> Debit (-)
-    paymentsRes.rows.forEach(p => {
-      const amt = Math.round(Number(p.amount || 0));
-      let methodDesc = p.payment_method || "";
-      if (p.payment_method?.toLowerCase() === "bank" && p.bank_name) {
-        methodDesc = `Bank: ${p.bank_name}`;
-      }
-
-      if (p.type === "opening_balance") {
-        allEntries.push({
-          id: p.id,
-          date: p.payment_date,
-          description: `🔑 Opening Balance`,
-          debit: 0,
-          credit: amt,
-          type: "opening_balance",
-          payment_method: p.payment_method || "-",
-          bank_name: p.bank_name || null
-        });
-      } else {
-        allEntries.push({
-          id: p.id,
-          date: p.payment_date,
-          description: p.type === "adjustment" ? `Adjustment (${methodDesc})` : `Payment Received (${methodDesc})`,
-          debit: amt,
-          credit: 0,
-          type: "payment",
-          payment_method: p.payment_method || "-",
-          bank_name: p.bank_name || null
-        });
-      }
-    });
-
-    // 1. Same-day entry sequence priority rule set karein (Snapshot -> Sales -> Payments)
-    const getTypePriority = (type) => {
-      if (type === "snapshot" || type === "opening_balance") return 0;
-      if (type === "sale") return 1;
-      return 2;
-    };
-
-    // 2. Chronological Order (Oldest First) me calculation ke liye sort karein
-    allEntries.sort((a, b) => {
-      const dateA = new Date(a.date).getTime();
-      const dateB = new Date(b.date).getTime();
-      
-      if (dateA !== dateB) return dateA - dateB;
-      
 // Load Live Payments after snapshot
     const paymentsRes = await db.query(
       `
