@@ -226,12 +226,13 @@ allEntries.forEach((entry) => {
   }
 });
 
-// 2. Clear Sorting Rule for UI (Latest dates at top)
-// Target: Date DESC, ID DESC (for same day transactions)
+// ✅ IS NAYE CODE SE REPLACE KAREIN:
 computedList.sort((a, b) => {
-  const dateDiff = new Date(b.date) - new Date(a.date);
-  if (dateDiff !== 0) return dateDiff;
-  return String(b.id).localeCompare(String(a.id));
+  const dateA = new Date(a.date).getTime();
+  const dateB = new Date(b.date).getTime();
+  
+  if (dateA !== dateB) return dateA - dateB; // Oldest Date First (Standard Ledger Flow)
+  return String(a.id).localeCompare(String(b.id)); // Same day entries deterministic order
 });
 
 res.json({
