@@ -207,6 +207,79 @@ router.get("/detail/:customer_code", async (req, res) => {
       
       if (dateA !== dateB) return dateA - dateB;
       
+// Load Live Payments after snapshot
+    const paymentsRes = await db.query(
+      `
+      SELECT cp.id, cp.payment_date, cp.amount, cp.type, cp.payment_method, cp.bank_profile_id, b.bank_name
+      FROM customer_payments cp
+      LEFT JOIN public.banks b ON b.id = cp.bank_profile_id
+      WHERE cp.ref_no = $1 AND cp.payment_date::date > $2::date
+      ORDER BY cp.payment_date, cp.id
+      `,
+      [customer_code, snapshotDateTo]
+    );
+
+    let allEntries = [];
+
+    // Sales -> Credit (+)
+    salesRes.rows.forEach(s => {
+      allEntries.push({
+        id: `SALE-${s.ref_no}`,
+        date: s.booking_date,
+        description: `Sale Invoice (${s.src}) - Ref: ${s.ref_no}`,
+        debit: 0,
+        credit: Math.round(Number(s.total_pkr || 0)),
+        type: "sale"
+      });
+    });
+
+    // Payments -> Debit (-)
+    paymentsRes.rows.forEach(p => {
+      const amt = Math.round(Number(p.amount || 0));
+      let methodDesc = p.payment_method || "";
+      if (p.payment_method?.toLowerCase() === "bank" && p.bank_name) {
+        methodDesc = `Bank: ${p.bank_name}`;
+      }
+
+      if (p.type === "opening_balance") {
+        allEntries.push({
+          id: p.id,
+          date: p.payment_date,
+          description: `🔑 Opening Balance`,
+          debit: 0,
+          credit: amt,
+          type: "opening_balance",
+          payment_method: p.payment_method || "-",
+          bank_name: p.bank_name || null
+        });
+      } else {
+        allEntries.push({
+          id: p.id,
+          date: p.payment_date,
+          description: p.type === "adjustment" ? `Adjustment (${methodDesc})` : `Payment Received (${methodDesc})`,
+          debit: amt,
+          credit: 0,
+          type: "payment",
+          payment_method: p.payment_method || "-",
+          bank_name: p.bank_name || null
+        });
+      }
+    });
+
+    // 1. Same-day entry sequence priority rule (Snapshot -> Sales -> Payments)
+    const getTypePriority = (type) => {
+      if (type === "snapshot" || type === "opening_balance") return 0;
+      if (type === "sale") return 1;
+      return 2;
+    };
+
+    // 2. Chronological Order (Oldest First) me exact balance calculation
+    allEntries.sort((a, b) => {
+      const dateA = new Date(a.date).getTime();
+      const dateB = new Date(b.date).getTime();
+      
+      if (dateA !== dateB) return dateA - dateB;
+      
       const prioA = getTypePriority(a.type);
       const prioB = getTypePriority(b.type);
       if (prioA !== prioB) return prioA - prioB;
@@ -244,19 +317,20 @@ router.get("/detail/:customer_code", async (req, res) => {
       }
     });
 
-    // 3. UI/PDF Display Sort (Standard Ledger Flow: 01/Aug Top -> 24/Aug Bottom)
-    // Aakhri entry (24/Aug TIC-00002) par exact 1,092,372 balance hi aayega.
+    // 3. UI/PDF Display Sort (NEWEST ENTRY AT TOP)
+    // Dynamic Sorting rule: Newest date & latest entry topmost rahegi, 
+    // Top row par latest entry ka balance exact 1,092,372 show hoga!
     computedList.sort((a, b) => {
       const dateA = new Date(a.date).getTime();
       const dateB = new Date(b.date).getTime();
       
-      if (dateA !== dateB) return dateA - dateB; // Oldest Date First
+      if (dateA !== dateB) return dateB - dateA; // Newest Date First
       
       const prioA = getTypePriority(a.type);
       const prioB = getTypePriority(b.type);
-      if (prioA !== prioB) return prioA - prioB;
+      if (prioA !== prioB) return prioB - prioA; // Latest entry on top for same day
       
-      return String(a.id).localeCompare(String(b.id));
+      return String(b.id).localeCompare(String(a.id));
     });
 
     res.json({
@@ -265,7 +339,7 @@ router.get("/detail/:customer_code", async (req, res) => {
       rows: computedList,
       totalRemainingBalance: runningBalance
     });
-
+     
   } catch (err) {
     console.error(err);
     res.json({ success: false, error: err.message });
