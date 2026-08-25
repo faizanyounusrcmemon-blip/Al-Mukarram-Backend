@@ -97,14 +97,14 @@ async function updatePaymentStatus(ref_no) {
 }
 
 /* =====================================================
-   PAYMENT PENDING / PARTIAL LIST (SUPER FAST & OPTIMIZED)
+   PAYMENT PENDING / PARTIAL / EXTRA PAID LIST
 ===================================================== */
 router.get("/pending/list", async (req, res) => {
   try {
     const pendingMap = new Map();
     const tables = ["bookings", "hotels", "visa", "card", "groups", "ticketing", "transport", "ziyarat"];
 
-    // 1. Direct Lookup: Fetch records directly using saved payment_status column (INSTANT)
+    // 1. Direct Lookup: Fetch records including EXTRA PAID status
     for (const tbl of tables) {
       try {
         const liveRes = await db.query(
@@ -112,7 +112,7 @@ router.get("/pending/list", async (req, res) => {
            FROM ${tbl} 
            WHERE (customer_code IS NULL OR TRIM(customer_code) = '')
            AND (is_deleted IS NOT TRUE OR is_deleted IS NULL)
-           AND UPPER(payment_status) IN ('PENDING', 'PARTIAL')`
+           AND UPPER(payment_status) IN ('PENDING', 'PARTIAL', 'EXTRA PAID')`
         );
 
         for (const row of liveRes.rows) {
@@ -123,13 +123,14 @@ router.get("/pending/list", async (req, res) => {
           pendingMap.set(refKey, {
             ref_no: cleanRef,
             customer_name: row.customer_name || "Walk-in Customer",
-            payment_status: (row.payment_status || "PENDING").toUpperCase()
+            payment_status: (row.payment_status || "PENDING").toUpperCase(),
+            remaining_balance: 0
           });
         }
       } catch (e) {}
     }
 
-    // 2. Archive Balances Lookup (Calculates PENDING/PARTIAL against payments)
+    // 2. Archive Balances Lookup (Calculates PENDING/PARTIAL/EXTRA PAID against payments)
     try {
       const payRes = await db.query(
         `SELECT LOWER(TRIM(ref_no)) as ref_key, COALESCE(SUM(amount), 0) as paid 
@@ -153,17 +154,32 @@ router.get("/pending/list", async (req, res) => {
         const cleanRef = arch.ref_no.trim();
         const refKey = cleanRef.toLowerCase();
 
-        if (pendingMap.has(refKey)) continue;
-
         const totalSale = Number(arch.balance || 0);
         const totalPaid = paymentsMap.get(refKey) || 0;
+        const diff = totalSale - totalPaid;
 
-        if (totalPaid < totalSale) {
-          pendingMap.set(refKey, {
-            ref_no: cleanRef,
-            customer_name: arch.customer_name || "Walk-in Customer",
-            payment_status: totalPaid > 0 ? "PARTIAL" : "PENDING"
-          });
+        // Agar balance me koi fark ho (Sale != Paid)
+        if (Math.abs(diff) > 0.01) {
+          let status = "PENDING";
+          if (totalPaid > totalSale) {
+            status = "EXTRA PAID";
+          } else if (totalPaid > 0) {
+            status = "PARTIAL";
+          }
+
+          if (pendingMap.has(refKey)) {
+            // Priority update status if mapped from direct table
+            const existing = pendingMap.get(refKey);
+            existing.remaining_balance = diff;
+            if (status === "EXTRA PAID") existing.payment_status = "EXTRA PAID";
+          } else {
+            pendingMap.set(refKey, {
+              ref_no: cleanRef,
+              customer_name: arch.customer_name || "Walk-in Customer",
+              payment_status: status,
+              remaining_balance: diff
+            });
+          }
         }
       }
     } catch (e) {}
