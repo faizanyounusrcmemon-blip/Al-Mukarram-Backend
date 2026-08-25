@@ -245,20 +245,22 @@ router.get("/detail/:customer_code", async (req, res) => {
       }
     });
 
-    // 3. UI/PDF Display Sort (NEWEST ENTRY AT TOP)
-    // Dynamic Sorting rule: Newest date & latest entry topmost rahegi, 
+// 3. UI/PDF Display Sort (NEWEST ENTRY AT TOP)
 computedList.sort((a, b) => {
   const dateA = new Date(a.date).getTime();
   const dateB = new Date(b.date).getTime();
   
   if (dateA !== dateB) return dateB - dateA; // Newest Date First
   
-  // Same Day me Latest/Newer Priority upper rakhne ke liye correct sorting:
-  const prioA = getTypePriority(a.type);
-  const prioB = getTypePriority(b.type);
-  if (prioA !== prioB) return prioA - prioB;
-  
-  return String(b.id).localeCompare(String(a.id));
+  // Same day sorting: Higher/Latest ID pehle aaye
+  const idA = String(a.id);
+  const idB = String(b.id);
+
+  // Snapshot hamesha sab se niche rahe Same-Day me
+  if (a.type === "snapshot") return 1;
+  if (b.type === "snapshot") return -1;
+
+  return idB.localeCompare(idA, undefined, { numeric: true, sensitivity: 'base' });
 });
 
     res.json({
