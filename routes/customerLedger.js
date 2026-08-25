@@ -46,7 +46,7 @@ async function getSaleAmount(ref_no) {
 }
 
 /* =====================================================
-   HELPER: UPDATE PAYMENT STATUS (FIXED EXTRA PAID LOGIC)
+   HELPER: UPDATE PAYMENT STATUS
 ===================================================== */
 async function updatePaymentStatus(ref_no) {
   try {
@@ -64,15 +64,12 @@ async function updatePaymentStatus(ref_no) {
     const totalPaid = Number(paid.rows[0]?.paid || 0);
     let status = "PENDING";
 
-    // 🔴 FIXED: EXTRA PAID logic explicitly added here
     if (totalPaid <= 0) {
       status = "PENDING";
-    } else if (totalPaid > totalSale && totalSale > 0) {
-      status = "EXTRA PAID";
-    } else if (Math.abs(totalPaid - totalSale) < 0.01 && totalSale > 0) {
-      status = "CLEARED"; // Or "COMPLETE"
     } else if (totalPaid > 0 && totalPaid < totalSale) {
       status = "PARTIAL";
+    } else if (totalPaid >= totalSale && totalSale > 0) {
+      status = "COMPLETE";
     }
 
     let table = null;
@@ -100,21 +97,22 @@ async function updatePaymentStatus(ref_no) {
 }
 
 /* =====================================================
-   PAYMENT PENDING / PARTIAL / EXTRA PAID LIST
+   PAYMENT PENDING / PARTIAL LIST (SUPER FAST & OPTIMIZED)
 ===================================================== */
 router.get("/pending/list", async (req, res) => {
   try {
     const pendingMap = new Map();
     const tables = ["bookings", "hotels", "visa", "card", "groups", "ticketing", "transport", "ziyarat"];
 
-    // 1. Direct Lookup across sales tables with updated live calculation
+    // 1. Direct Lookup: Fetch records directly using saved payment_status column (INSTANT)
     for (const tbl of tables) {
       try {
         const liveRes = await db.query(
-          `SELECT ref_no, customer_name, total_pkr, payment_status 
+          `SELECT ref_no, customer_name, payment_status 
            FROM ${tbl} 
            WHERE (customer_code IS NULL OR TRIM(customer_code) = '')
-           AND (is_deleted IS NOT TRUE OR is_deleted IS NULL)`
+           AND (is_deleted IS NOT TRUE OR is_deleted IS NULL)
+           AND UPPER(payment_status) IN ('PENDING', 'PARTIAL')`
         );
 
         for (const row of liveRes.rows) {
@@ -122,39 +120,16 @@ router.get("/pending/list", async (req, res) => {
           const cleanRef = row.ref_no.trim();
           const refKey = cleanRef.toLowerCase();
 
-          // Live payment check to verify EXTRA PAID
-          const paidRes = await db.query(
-            `SELECT COALESCE(SUM(amount), 0) AS paid FROM customer_payments 
-             WHERE TRIM(LOWER(ref_no)) = LOWER($1) AND (is_deleted IS NOT TRUE OR is_deleted IS NULL)`,
-            [cleanRef]
-          );
-
-          const totalSale = Number(row.total_pkr || 0);
-          const totalPaid = Number(paidRes.rows[0]?.paid || 0);
-          const diff = totalSale - totalPaid;
-
-          let computedStatus = row.payment_status ? row.payment_status.toUpperCase() : "PENDING";
-          if (totalPaid > totalSale && totalSale > 0) {
-            computedStatus = "EXTRA PAID";
-          } else if (totalPaid > 0 && totalPaid < totalSale) {
-            computedStatus = "PARTIAL";
-          } else if (totalPaid <= 0) {
-            computedStatus = "PENDING";
-          }
-
-          if (computedStatus !== "CLEARED" && computedStatus !== "COMPLETE") {
-            pendingMap.set(refKey, {
-              ref_no: cleanRef,
-              customer_name: row.customer_name || "Walk-in Customer",
-              payment_status: computedStatus,
-              remaining_balance: diff
-            });
-          }
+          pendingMap.set(refKey, {
+            ref_no: cleanRef,
+            customer_name: row.customer_name || "Walk-in Customer",
+            payment_status: (row.payment_status || "PENDING").toUpperCase()
+          });
         }
       } catch (e) {}
     }
 
-    // 2. Archive Balances Lookup
+    // 2. Archive Balances Lookup (Calculates PENDING/PARTIAL against payments)
     try {
       const payRes = await db.query(
         `SELECT LOWER(TRIM(ref_no)) as ref_key, COALESCE(SUM(amount), 0) as paid 
@@ -178,26 +153,17 @@ router.get("/pending/list", async (req, res) => {
         const cleanRef = arch.ref_no.trim();
         const refKey = cleanRef.toLowerCase();
 
+        if (pendingMap.has(refKey)) continue;
+
         const totalSale = Number(arch.balance || 0);
         const totalPaid = paymentsMap.get(refKey) || 0;
-        const diff = totalSale - totalPaid;
 
-        if (Math.abs(diff) > 0.01) {
-          let status = "PENDING";
-          if (totalPaid > totalSale) {
-            status = "EXTRA PAID";
-          } else if (totalPaid > 0) {
-            status = "PARTIAL";
-          }
-
-          if (!pendingMap.has(refKey)) {
-            pendingMap.set(refKey, {
-              ref_no: cleanRef,
-              customer_name: arch.customer_name || "Walk-in Customer",
-              payment_status: status,
-              remaining_balance: diff
-            });
-          }
+        if (totalPaid < totalSale) {
+          pendingMap.set(refKey, {
+            ref_no: cleanRef,
+            customer_name: arch.customer_name || "Walk-in Customer",
+            payment_status: totalPaid > 0 ? "PARTIAL" : "PENDING"
+          });
         }
       }
     } catch (e) {}
@@ -226,6 +192,7 @@ router.get("/:ref_no", async (req, res) => {
 
     const tables = ["bookings", "hotels", "visa", "card", "groups", "ticketing", "transport", "ziyarat"];
 
+    // 1. Prevent loading if it belongs to a Registered Customer
     if (ref_no.toUpperCase().startsWith("CUST-")) {
       return res.json({
         success: false,
@@ -251,6 +218,7 @@ router.get("/:ref_no", async (req, res) => {
       } catch (e) {}
     }
 
+    // 2. Check Archive Balances (Non-Registered)
     try {
       const arch = await db.query(
         `SELECT name AS customer_name FROM archive_balances 
@@ -263,6 +231,7 @@ router.get("/:ref_no", async (req, res) => {
       }
     } catch (e) {}
 
+    // 3. Check Live Sales Tables
     if (!customerName) {
       for (const tbl of tables) {
         try {
@@ -288,6 +257,7 @@ router.get("/:ref_no", async (req, res) => {
       });
     }
 
+    /* HEADER */
     rows.push({
       id: "CUSTOMER",
       date: baseDate,
@@ -297,6 +267,7 @@ router.get("/:ref_no", async (req, res) => {
       balance: 0
     });
 
+    /* SALE / OPENING BALANCE */
     let saleDescription = `Sale Invoice (${ref_no})`;
 
     try {
@@ -325,6 +296,7 @@ router.get("/:ref_no", async (req, res) => {
       });
     }
 
+    /* PAYMENTS WITH BANK NAME JOIN */
     const payments = await db.query(
       `SELECT 
          cp.id, 
@@ -352,16 +324,16 @@ router.get("/:ref_no", async (req, res) => {
         methodDesc = "Bank";
       }
 
-      rows.push({
-        id: p.id,
-        date: p.payment_date,
-        description: p.type === "adjustment" ? "Adjustment" : `Payment Received (${methodDesc})`,
-        debit: amount,
-        credit: 0,
-        balance,
-        payment_method: p.payment_method || "-",
-        bank_name: p.bank_name || null
-      });
+rows.push({
+  id: p.id,
+  date: p.payment_date,
+  description: p.type === "adjustment" ? "Adjustment" : `Payment Received (${methodDesc})`,
+  debit: amount,
+  credit: 0,
+  balance,
+  payment_method: p.payment_method || "-", // 👈 Yeh Add karein
+  bank_name: p.bank_name || null           // 👈 Yeh Add karein
+});
     });
 
     res.json({
