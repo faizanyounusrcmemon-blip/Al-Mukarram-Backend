@@ -194,14 +194,14 @@ router.get("/detail/:customer_code", async (req, res) => {
       }
     });
 
-    // 1. Same-day entry sequence priority rule (Snapshot -> Sales -> Payments)
+// 1. Same-day entry sequence priority rule (Snapshot -> Sales -> Payments)
     const getTypePriority = (type) => {
       if (type === "snapshot" || type === "opening_balance") return 0;
       if (type === "sale") return 1;
       return 2;
     };
 
-    // 2. Chronological Order (Oldest First) me exact balance calculation
+    // 2. Base Chronological Sort (Oldest First for accurate running calculation)
     allEntries.sort((a, b) => {
       const dateA = new Date(a.date).getTime();
       const dateB = new Date(b.date).getTime();
@@ -212,7 +212,7 @@ router.get("/detail/:customer_code", async (req, res) => {
       const prioB = getTypePriority(b.type);
       if (prioA !== prioB) return prioA - prioB;
       
-      return String(a.id).localeCompare(String(b.id));
+      return String(a.id).localeCompare(String(b.id), undefined, { numeric: true });
     });
 
     let runningBalance = hasSnapshot ? customerBaseline : 0;
@@ -230,6 +230,7 @@ router.get("/detail/:customer_code", async (req, res) => {
       });
     }
 
+    // Exact Running Balance Assigning
     allEntries.forEach((entry) => {
       runningBalance = runningBalance + entry.credit - entry.debit;
 
@@ -245,23 +246,20 @@ router.get("/detail/:customer_code", async (req, res) => {
       }
     });
 
-// 3. UI/PDF Display Sort (NEWEST ENTRY AT TOP)
-computedList.sort((a, b) => {
-  const dateA = new Date(a.date).getTime();
-  const dateB = new Date(b.date).getTime();
-  
-  if (dateA !== dateB) return dateB - dateA; // Newest Date First
-  
-  // Same day sorting: Higher/Latest ID pehle aaye
-  const idA = String(a.id);
-  const idB = String(b.id);
+    // 3. PERMANENT DISPLAY SORT (CHRONOLOGICAL OLDEST FIRST)
+    // Dynamic accounting standard: Purani entries upar, Nayi entries sab se niche
+    computedList.sort((a, b) => {
+      const dateA = new Date(a.date).getTime();
+      const dateB = new Date(b.date).getTime();
+      
+      if (dateA !== dateB) return dateA - dateB; // Purani tareekh upar
 
-  // Snapshot hamesha sab se niche rahe Same-Day me
-  if (a.type === "snapshot") return 1;
-  if (b.type === "snapshot") return -1;
+      const prioA = getTypePriority(a.type);
+      const prioB = getTypePriority(b.type);
+      if (prioA !== prioB) return prioA - prioB;
 
-  return idB.localeCompare(idA, undefined, { numeric: true, sensitivity: 'base' });
-});
+      return String(a.id).localeCompare(String(b.id), undefined, { numeric: true });
+    });
 
     res.json({
       success: true,
