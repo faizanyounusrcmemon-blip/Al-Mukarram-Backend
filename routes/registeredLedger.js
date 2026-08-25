@@ -194,14 +194,14 @@ router.get("/detail/:customer_code", async (req, res) => {
       }
     });
 
-// 1. Same-day entry sequence priority rule (Snapshot -> Sales -> Payments)
+// 1. Same-day sequence priority (Oldest calculation order)
     const getTypePriority = (type) => {
       if (type === "snapshot" || type === "opening_balance") return 0;
       if (type === "sale") return 1;
       return 2;
     };
 
-    // 2. Base Chronological Sort (Oldest First for accurate running calculation)
+    // 2. Step 1: CHRONOLOGICAL SORT (Purani tareekh pehle taake running balance sahi calculate ho)
     allEntries.sort((a, b) => {
       const dateA = new Date(a.date).getTime();
       const dateB = new Date(b.date).getTime();
@@ -230,7 +230,7 @@ router.get("/detail/:customer_code", async (req, res) => {
       });
     }
 
-    // Exact Running Balance Assigning
+    // Step 2: Calculate Exact Running Balance
     allEntries.forEach((entry) => {
       runningBalance = runningBalance + entry.credit - entry.debit;
 
@@ -246,19 +246,24 @@ router.get("/detail/:customer_code", async (req, res) => {
       }
     });
 
-    // 3. PERMANENT DISPLAY SORT (CHRONOLOGICAL OLDEST FIRST)
-    // Dynamic accounting standard: Purani entries upar, Nayi entries sab se niche
+    // Step 3: DISPLAY SORT (NEWEST FIRST AT TOP + SAME DAY REVERSE)
     computedList.sort((a, b) => {
       const dateA = new Date(a.date).getTime();
       const dateB = new Date(b.date).getTime();
       
-      if (dateA !== dateB) return dateA - dateB; // Purani tareekh upar
+      // Target 1: Nayi Date Sab Se Upar
+      if (dateA !== dateB) return dateB - dateA; 
+      
+      // Snapshot hamesha sab se niche rahe Same-Day me
+      if (a.type === "snapshot") return 1;
+      if (b.type === "snapshot") return -1;
 
+      // Target 2: Same-day me LATEST Entry Sab Se Upar (Payment/Sale Priority Reversed)
       const prioA = getTypePriority(a.type);
       const prioB = getTypePriority(b.type);
-      if (prioA !== prioB) return prioA - prioB;
+      if (prioA !== prioB) return prioB - prioA;
 
-      return String(a.id).localeCompare(String(b.id), undefined, { numeric: true });
+      return String(b.id).localeCompare(String(a.id), undefined, { numeric: true });
     });
 
     res.json({
