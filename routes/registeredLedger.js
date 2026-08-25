@@ -247,19 +247,19 @@ router.get("/detail/:customer_code", async (req, res) => {
 
     // 3. UI/PDF Display Sort (NEWEST ENTRY AT TOP)
     // Dynamic Sorting rule: Newest date & latest entry topmost rahegi, 
-    // Top row par latest entry ka balance exact 1,092,372 show hoga!
-    computedList.sort((a, b) => {
-      const dateA = new Date(a.date).getTime();
-      const dateB = new Date(b.date).getTime();
-      
-      if (dateA !== dateB) return dateB - dateA; // Newest Date First
-      
-      const prioA = getTypePriority(a.type);
-      const prioB = getTypePriority(b.type);
-      if (prioA !== prioB) return prioB - prioA; // Latest entry on top for same day
-      
-      return String(b.id).localeCompare(String(a.id));
-    });
+computedList.sort((a, b) => {
+  const dateA = new Date(a.date).getTime();
+  const dateB = new Date(b.date).getTime();
+  
+  if (dateA !== dateB) return dateB - dateA; // Newest Date First
+  
+  // Same Day me Latest/Newer Priority upper rakhne ke liye correct sorting:
+  const prioA = getTypePriority(a.type);
+  const prioB = getTypePriority(b.type);
+  if (prioA !== prioB) return prioA - prioB;
+  
+  return String(b.id).localeCompare(String(a.id));
+});
 
     res.json({
       success: true,
