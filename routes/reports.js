@@ -201,40 +201,80 @@ router.get("/supplier-adjustment-only", async (req, res) => {
 });
 
 /* =====================================================
-   🔹 ALL REPORTS (UNCHANGED)
+   🔹 ALL REPORTS (WITH REGISTERED / WALK-IN IDENTIFIER)
 ===================================================== */
 router.get("/all", async (req, res) => {
   try {
     const q = await db.query(`
-      SELECT 'Packages' AS type, id, ref_no, customer_name, booking_date, total_pkr
+      SELECT 
+        'Packages' AS type, id, ref_no, customer_name, customer_code, booking_date, total_pkr,
+        CASE 
+          WHEN customer_code IS NOT NULL AND TRIM(customer_code) != '' THEN 'Registered'
+          ELSE 'Walk-in'
+        END AS customer_type
       FROM bookings WHERE is_deleted=false
 
       UNION ALL
-      SELECT 'Ticketing', id, ref_no, customer_name, booking_date, total_pkr
+      SELECT 
+        'Ticketing', id, ref_no, customer_name, customer_code, booking_date, total_pkr,
+        CASE 
+          WHEN customer_code IS NOT NULL AND TRIM(customer_code) != '' THEN 'Registered'
+          ELSE 'Walk-in'
+        END AS customer_type
       FROM ticketing WHERE is_deleted=false
 
       UNION ALL
-      SELECT 'Hotels', id, ref_no, customer_name, booking_date, total_pkr
+      SELECT 
+        'Hotels', id, ref_no, customer_name, customer_code, booking_date, total_pkr,
+        CASE 
+          WHEN customer_code IS NOT NULL AND TRIM(customer_code) != '' THEN 'Registered'
+          ELSE 'Walk-in'
+        END AS customer_type
       FROM hotels WHERE is_deleted=false
 
       UNION ALL
-      SELECT 'Visa', id, ref_no, customer_name, booking_date, total_pkr
+      SELECT 
+        'Visa', id, ref_no, customer_name, customer_code, booking_date, total_pkr,
+        CASE 
+          WHEN customer_code IS NOT NULL AND TRIM(customer_code) != '' THEN 'Registered'
+          ELSE 'Walk-in'
+        END AS customer_type
       FROM visa WHERE is_deleted=false
 
       UNION ALL
-      SELECT 'Card', id, ref_no, customer_name, booking_date, total_pkr
+      SELECT 
+        'Card', id, ref_no, customer_name, customer_code, booking_date, total_pkr,
+        CASE 
+          WHEN customer_code IS NOT NULL AND TRIM(customer_code) != '' THEN 'Registered'
+          ELSE 'Walk-in'
+        END AS customer_type
       FROM card WHERE is_deleted=false
 
       UNION ALL
-      SELECT 'Groups', id, ref_no, customer_name, booking_date, total_pkr
+      SELECT 
+        'Groups', id, ref_no, customer_name, customer_code, booking_date, total_pkr,
+        CASE 
+          WHEN customer_code IS NOT NULL AND TRIM(customer_code) != '' THEN 'Registered'
+          ELSE 'Walk-in'
+        END AS customer_type
       FROM groups WHERE is_deleted=false
 
       UNION ALL
-      SELECT 'Transport', id, ref_no, customer_name, booking_date, total_pkr
+      SELECT 
+        'Transport', id, ref_no, customer_name, customer_code, booking_date, total_pkr,
+        CASE 
+          WHEN customer_code IS NOT NULL AND TRIM(customer_code) != '' THEN 'Registered'
+          ELSE 'Walk-in'
+        END AS customer_type
       FROM transport WHERE is_deleted=false
 
       UNION ALL
-      SELECT 'Ziyarat', id, ref_no, customer_name, booking_date, total_pkr
+      SELECT 
+        'Ziyarat', id, ref_no, customer_name, customer_code, booking_date, total_pkr,
+        CASE 
+          WHEN customer_code IS NOT NULL AND TRIM(customer_code) != '' THEN 'Registered'
+          ELSE 'Walk-in'
+        END AS customer_type
       FROM ziyarat WHERE is_deleted=false
 
       ORDER BY booking_date DESC

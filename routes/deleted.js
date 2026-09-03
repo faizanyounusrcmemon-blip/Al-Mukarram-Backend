@@ -3,61 +3,70 @@ const router = express.Router();
 const db = require("../db");
 
 /* =====================================================
-   GET ALL DELETED RECORDS (SALES + PURCHASE + SUPPLIERS + CUSTOMERS)
+   GET ALL DELETED RECORDS WITH CODE / STATUS
 ===================================================== */
 router.get("/list", async (req, res) => {
   try {
     const q = await db.query(`
 
       /* BOOKINGS */
-      SELECT 'PACKAGE' AS type, ref_no, customer_name, booking_date, total_pkr AS amount
+      SELECT 
+        'PACKAGE' AS type, ref_no, customer_name, customer_code, booking_date, total_pkr AS amount,
+        CASE WHEN customer_code IS NOT NULL AND TRIM(customer_code) != '' THEN 'Registered' ELSE 'Walk-in' END AS customer_type
       FROM bookings WHERE is_deleted = true
 
       UNION ALL
-      SELECT 'HOTEL' AS type, ref_no, customer_name, booking_date, total_pkr
+      SELECT 
+        'HOTEL' AS type, ref_no, customer_name, customer_code, booking_date, total_pkr,
+        CASE WHEN customer_code IS NOT NULL AND TRIM(customer_code) != '' THEN 'Registered' ELSE 'Walk-in' END AS customer_type
       FROM hotels WHERE is_deleted = true
 
       UNION ALL
-      SELECT 'TICKETING' AS type, ref_no, customer_name, booking_date, total_pkr
+      SELECT 
+        'TICKETING' AS type, ref_no, customer_name, customer_code, booking_date, total_pkr,
+        CASE WHEN customer_code IS NOT NULL AND TRIM(customer_code) != '' THEN 'Registered' ELSE 'Walk-in' END AS customer_type
       FROM ticketing WHERE is_deleted = true
 
       UNION ALL
-      SELECT 'VISA' AS type, ref_no, customer_name, booking_date, total_pkr
+      SELECT 
+        'VISA' AS type, ref_no, customer_name, customer_code, booking_date, total_pkr,
+        CASE WHEN customer_code IS NOT NULL AND TRIM(customer_code) != '' THEN 'Registered' ELSE 'Walk-in' END AS customer_type
       FROM visa WHERE is_deleted = true
 
       UNION ALL
-      SELECT 'CARD' AS type, ref_no, customer_name, booking_date, total_pkr
+      SELECT 
+        'CARD' AS type, ref_no, customer_name, customer_code, booking_date, total_pkr,
+        CASE WHEN customer_code IS NOT NULL AND TRIM(customer_code) != '' THEN 'Registered' ELSE 'Walk-in' END AS customer_type
       FROM card WHERE is_deleted = true
 
       UNION ALL
-      SELECT 'groups' AS type, ref_no, customer_name, booking_date, total_pkr
+      SELECT 
+        'GROUPS' AS type, ref_no, customer_name, customer_code, booking_date, total_pkr,
+        CASE WHEN customer_code IS NOT NULL AND TRIM(customer_code) != '' THEN 'Registered' ELSE 'Walk-in' END AS customer_type
       FROM groups WHERE is_deleted = true
 
       UNION ALL
-      SELECT 'TRANSPORT' AS type, ref_no, customer_name, booking_date, total_pkr
+      SELECT 
+        'TRANSPORT' AS type, ref_no, customer_name, customer_code, booking_date, total_pkr,
+        CASE WHEN customer_code IS NOT NULL AND TRIM(customer_code) != '' THEN 'Registered' ELSE 'Walk-in' END AS customer_type
       FROM transport WHERE is_deleted = true
 
       UNION ALL
-      SELECT 'ZIYARAT' AS type, ref_no, customer_name, booking_date, total_pkr
+      SELECT 
+        'ZIYARAT' AS type, ref_no, customer_name, customer_code, booking_date, total_pkr,
+        CASE WHEN customer_code IS NOT NULL AND TRIM(customer_code) != '' THEN 'Registered' ELSE 'Walk-in' END AS customer_type
       FROM ziyarat WHERE is_deleted = true
 
-      /* PURCHASE - get customer_name from any sales table */
+      /* PURCHASE */
       UNION ALL
       SELECT
         'PURCHASE' AS type,
         pe.ref_no,
-        COALESCE(
-          b.customer_name,
-          h.customer_name,
-          t.customer_name,
-          v.customer_name,
-          c.customer_name,
-          tr.customer_name,
-          z.customer_name,
-          '-'
-        ) AS customer_name,
+        COALESCE(b.customer_name, h.customer_name, t.customer_name, v.customer_name, c.customer_name, tr.customer_name, z.customer_name, '-') AS customer_name,
+        COALESCE(b.customer_code, h.customer_code, t.customer_code, v.customer_code, c.customer_code, tr.customer_code, z.customer_code, NULL) AS customer_code,
         MIN(pe.created_at)::date AS booking_date,
-        SUM(pe.purchase_pkr) AS amount
+        SUM(pe.purchase_pkr) AS amount,
+        'Purchase' AS customer_type
       FROM purchase_entries pe
       LEFT JOIN bookings b ON b.ref_no = pe.ref_no
       LEFT JOIN hotels h ON h.ref_no = pe.ref_no
@@ -68,7 +77,7 @@ router.get("/list", async (req, res) => {
       LEFT JOIN transport tr ON tr.ref_no = pe.ref_no
       LEFT JOIN ziyarat z ON z.ref_no = pe.ref_no
       WHERE pe.is_deleted = true
-      GROUP BY pe.ref_no, b.customer_name, h.customer_name, t.customer_name, v.customer_name, c.customer_name, tr.customer_name, z.customer_name
+      GROUP BY pe.ref_no, b.customer_name, h.customer_name, t.customer_name, v.customer_name, c.customer_name, tr.customer_name, z.customer_name, b.customer_code, h.customer_code, t.customer_code, v.customer_code, c.customer_code, tr.customer_code, z.customer_code
 
       /* SUPPLIERS */
       UNION ALL
@@ -76,8 +85,10 @@ router.get("/list", async (req, res) => {
         'SUPPLIER' AS type,
         supplier_code AS ref_no,
         supplier_name AS customer_name,
+        supplier_code AS customer_code,
         NULL::date AS booking_date,
-        NULL::numeric AS amount
+        NULL::numeric AS amount,
+        'Supplier' AS customer_type
       FROM suppliers
       WHERE is_deleted = true
 
@@ -87,8 +98,10 @@ router.get("/list", async (req, res) => {
         'CUSTOMER' AS type,
         customer_code AS ref_no,
         name AS customer_name,
+        customer_code AS customer_code,
         NULL::date AS booking_date,
-        NULL::numeric AS amount
+        NULL::numeric AS amount,
+        'Customer' AS customer_type
       FROM customers
       WHERE is_deleted = true
 

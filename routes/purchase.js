@@ -757,7 +757,7 @@ router.post("/save", async (req, res) => {
 });
 
 /* =====================================================
-   PURCHASE LIST (WITH CUSTOMER NAME)
+   PURCHASE LIST (WITH CUSTOMER NAME & CODE)
 ===================================================== */
 router.get("/list", async (req, res) => {
   try {
@@ -774,12 +774,13 @@ router.get("/list", async (req, res) => {
       i += 2;
     }
 
-    // 🔥 PARTIAL SEARCH (REF NO OR CUSTOMER NAME)
+    // PARTIAL SEARCH (REF NO OR CUSTOMER NAME)
     if (ref) {
       where += `
         AND (
           p.ref_no ILIKE $${i}
           OR s.customer_name ILIKE $${i}
+          OR s.customer_code ILIKE $${i}
         )
       `;
       params.push(`%${ref}%`);
@@ -791,27 +792,28 @@ router.get("/list", async (req, res) => {
       SELECT
         p.ref_no,
         MAX(s.customer_name) AS customer_name,
+        MAX(s.customer_code) AS customer_code,
         SUM(p.sale_pkr)      AS sale_pkr,
         SUM(p.purchase_pkr)  AS purchase_pkr,
         SUM(p.profit)        AS profit,
         MIN(p.created_at)    AS created_at
       FROM purchase_entries p
       LEFT JOIN (
-        SELECT ref_no, customer_name FROM bookings
+        SELECT ref_no, customer_name, customer_code FROM bookings
         UNION ALL
-        SELECT ref_no, customer_name FROM hotels
+        SELECT ref_no, customer_name, customer_code FROM hotels
         UNION ALL
-        SELECT ref_no, customer_name FROM visa
+        SELECT ref_no, customer_name, customer_code FROM visa
         UNION ALL
-        SELECT ref_no, customer_name FROM card
+        SELECT ref_no, customer_name, customer_code FROM card
         UNION ALL
-        SELECT ref_no, customer_name FROM groups
+        SELECT ref_no, customer_name, customer_code FROM groups
         UNION ALL
-        SELECT ref_no, customer_name FROM ticketing
+        SELECT ref_no, customer_name, customer_code FROM ticketing
         UNION ALL
-        SELECT ref_no, customer_name FROM transport
+        SELECT ref_no, customer_name, customer_code FROM transport
         UNION ALL
-        SELECT ref_no, customer_name FROM ziyarat
+        SELECT ref_no, customer_name, customer_code FROM ziyarat
       ) s ON s.ref_no = p.ref_no
       ${where}
       GROUP BY p.ref_no
