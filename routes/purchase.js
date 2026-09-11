@@ -120,14 +120,28 @@ if (salesRow.infant_count > 0)
 
 
 
-      // TRANSPORT
+// TRANSPORT
       if (Array.isArray(salesRow.transport)) {
-        salesRow.transport.forEach((t,i)=>{
-          const base = `Transport ${i+1}`;
+        salesRow.transport.forEach((t, i) => {
+          const base = `Transport ${i + 1}`;
           const label = t.text || t.route || t.description || "";
+          
+          // DD/MMM/YYYY Format Logic
+          let formattedDate = "";
+          if (t.date) {
+            const d = new Date(t.date);
+            if (!isNaN(d.getTime())) {
+              const day = String(d.getDate()).padStart(2, "0");
+              const mon = d.toLocaleString("en-US", { month: "short" }).toUpperCase();
+              const year = d.getFullYear();
+              formattedDate = ` (${day}/${mon}/${year})`;
+            }
+          }
+
           const sar = Number(t.amount) || 0;
+          
           rows.push({
-            item: label ? `${base} - ${label}` : base, // ✅ item میں label include کریں
+            item: label ? `${base}${formattedDate} - ${label}` : `${base}${formattedDate}`,
             sale_sar: sar,
             sale_rate: salesRow.transport_sar_rate || 0,
             sale_pkr: sar * (salesRow.transport_sar_rate || 0)
@@ -281,7 +295,7 @@ if (salesRow.infant_count > 0)
 
 
    
-   /* =========================
+/* =========================
        TRANSPORT ONLY (TRN-)
     ========================= */
     else if (ref_no.startsWith("TRN-")) {
@@ -303,13 +317,27 @@ if (salesRow.infant_count > 0)
         r.rows.forEach((t, i) => {
           const baseItem = `Transport ${i + 1}`;
           const label = t.description || t.text || t.route || "";
+          
+          // Traveling Date Extraction & DD/MMM/YYYY Format Logic
+          const rawDate = t.date || t.travelDate || t.travel_date;
+          let formattedDate = "";
+          
+          if (rawDate) {
+            const d = new Date(rawDate);
+            if (!isNaN(d.getTime())) {
+              const day = String(d.getDate()).padStart(2, "0");
+              const mon = d.toLocaleString("en-US", { month: "short" }).toUpperCase();
+              const year = d.getFullYear();
+              formattedDate = ` (${day}/${mon}/${year})`;
+            }
+          }
 
-          const sar = Number(t.sar) || 0;     // ✅ FIX HERE
+          const sar = Number(t.sar) || Number(t.amount) || 0;
           const rate = Number(r.pkr_rate) || 0;
 
           rows.push({
-            item: label ? `${baseItem} - ${label}` : baseItem, // ✅ include route/text in item
-            sale_sar: sar,        // ✅ now works
+            item: label ? `${baseItem}${formattedDate} - ${label}` : `${baseItem}${formattedDate}`, // ✅ Traveling Date added
+            sale_sar: sar,
             sale_rate: rate,
             sale_pkr: sar * rate,
           });
