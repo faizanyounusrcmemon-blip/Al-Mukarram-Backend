@@ -476,11 +476,11 @@ router.get("/customer-sale", async (req, res) => {
   try {
     const rows = [];
 
-    // 1. Registered Active Customers List (From customers table)
+    // 1. Registered Active Customers List (Code + Name)
     const custRes = await db.query(
-      `SELECT name FROM customers WHERE is_deleted = false ORDER BY name ASC`
+      `SELECT customer_code AS code, name FROM customers WHERE is_deleted = false ORDER BY name ASC`
     );
-    const customerList = custRes.rows.map((c) => c.name);
+    const customerList = custRes.rows; // [{ code: 'CUST-001', name: 'MARFANI TRAVELS' }, ...]
 
     // 2. BOOKINGS (PACKAGES)
     const pkgRes = await db.query(
@@ -497,12 +497,15 @@ router.get("/customer-sale", async (req, res) => {
       const routeText = from && to ? `${from} → ${to}` : "";
       const extraInfo = [airline, routeText].filter(Boolean).join(" | ");
 
+      const cCode = s.customer_code || "WALKIN";
+
       // Tickets
       if (s.adult_count > 0) {
         const sar = s.adult_count * s.adult_rate;
         const rate = Number(s.flight_sar_rate) || 0;
         rows.push({
           booking_date: s.booking_date,
+          customer_code: cCode,
           customer_name: s.customer_name || "Walk-in Customer",
           ref_no: s.ref_no,
           item: `Ticket – Adult (${s.adult_count} Person${s.adult_count > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
@@ -516,6 +519,7 @@ router.get("/customer-sale", async (req, res) => {
         const rate = Number(s.flight_sar_rate) || 0;
         rows.push({
           booking_date: s.booking_date,
+          customer_code: cCode,
           customer_name: s.customer_name || "Walk-in Customer",
           ref_no: s.ref_no,
           item: `Ticket – Child (${s.child_count} Person${s.child_count > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
@@ -529,6 +533,7 @@ router.get("/customer-sale", async (req, res) => {
         const rate = Number(s.flight_sar_rate) || 0;
         rows.push({
           booking_date: s.booking_date,
+          customer_code: cCode,
           customer_name: s.customer_name || "Walk-in Customer",
           ref_no: s.ref_no,
           item: `Ticket – Infant (${s.infant_count} Person${s.infant_count > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
@@ -548,6 +553,7 @@ router.get("/customer-sale", async (req, res) => {
           const rate = Number(s.hotel_sar_rate) || 0;
           rows.push({
             booking_date: s.booking_date,
+            customer_code: cCode,
             customer_name: s.customer_name || "Walk-in Customer",
             ref_no: s.ref_no,
             item: `Hotel ${i + 1} - ${h.hotel || ""} (${type}${type ? ", " : ""}${rooms} Room${rooms > 1 ? "s" : ""}, ${nights} Night${nights > 1 ? "s" : ""})`,
@@ -567,6 +573,7 @@ router.get("/customer-sale", async (req, res) => {
           const rate = Number(s.visa_sar_rate) || 0;
           rows.push({
             booking_date: s.booking_date,
+            customer_code: cCode,
             customer_name: s.customer_name || "Walk-in Customer",
             ref_no: s.ref_no,
             item: v.type ? `Visa ${i + 1} - ${v.type} (${persons} Person${persons > 1 ? "s" : ""})` : `Visa ${i + 1} (${persons} Person${persons > 1 ? "s" : ""})`,
@@ -585,6 +592,7 @@ router.get("/customer-sale", async (req, res) => {
           const rate = Number(s.transport_sar_rate) || 0;
           rows.push({
             booking_date: s.booking_date,
+            customer_code: cCode,
             customer_name: s.customer_name || "Walk-in Customer",
             ref_no: s.ref_no,
             item: label ? `Transport ${i + 1} - ${label}` : `Transport ${i + 1}`,
@@ -603,6 +611,7 @@ router.get("/customer-sale", async (req, res) => {
           const rate = Number(s.ziyarat_sar_rate) || 0;
           rows.push({
             booking_date: s.booking_date,
+            customer_code: cCode,
             customer_name: s.customer_name || "Walk-in Customer",
             ref_no: s.ref_no,
             item: label ? `Ziyarat ${i + 1} - ${label}` : `Ziyarat ${i + 1}`,
@@ -619,6 +628,7 @@ router.get("/customer-sale", async (req, res) => {
       `SELECT * FROM hotels WHERE is_deleted = false ORDER BY booking_date DESC`
     );
     hotRes.rows.forEach((r) => {
+      const cCode = r.customer_code || "WALKIN";
       (r.hotel_name || []).forEach((name, i) => {
         const type = r.hotel_type?.[i] ? r.hotel_type[i].toUpperCase() : "";
         const rooms = Number(r.hotel_rooms?.[i]) || 0;
@@ -627,6 +637,7 @@ router.get("/customer-sale", async (req, res) => {
         const rate = Number(r.sar_rate) || 0;
         rows.push({
           booking_date: r.booking_date,
+          customer_code: cCode,
           customer_name: r.customer_name || "Walk-in Customer",
           ref_no: r.ref_no,
           item: `Hotel ${i + 1} - ${name} (${type}${type ? ", " : ""}${rooms} Room${rooms > 1 ? "s" : ""}, ${nights} Night${nights > 1 ? "s" : ""})`,
@@ -642,11 +653,13 @@ router.get("/customer-sale", async (req, res) => {
       `SELECT * FROM visa WHERE is_deleted = false ORDER BY booking_date DESC`
     );
     visaRes.rows.forEach((v) => {
+      const cCode = v.customer_code || "WALKIN";
       (v.rows || []).forEach((r, i) => {
         const sar = Number(r.total) || Number(r.persons * r.rate) || 0;
         const rate = Number(v.pkr_rate) || 0;
         rows.push({
           booking_date: v.booking_date,
+          customer_code: cCode,
           customer_name: v.customer_name || "Walk-in Customer",
           ref_no: v.ref_no,
           item: r.type ? `Visa ${i + 1} - ${r.type} (${r.persons} Person${r.persons > 1 ? "s" : ""})` : `Visa (${r.persons} Person${r.persons > 1 ? "s" : ""})`,
@@ -662,11 +675,13 @@ router.get("/customer-sale", async (req, res) => {
       `SELECT * FROM card WHERE is_deleted = false ORDER BY booking_date DESC`
     );
     cardRes.rows.forEach((v) => {
+      const cCode = v.customer_code || "WALKIN";
       (v.rows || []).forEach((r, i) => {
         const sar = Number(r.total) || Number(r.persons * r.rate) || 0;
         const rate = Number(v.pkr_rate) || 0;
         rows.push({
           booking_date: v.booking_date,
+          customer_code: cCode,
           customer_name: v.customer_name || "Walk-in Customer",
           ref_no: v.ref_no,
           item: r.type ? `Card ${i + 1} - ${r.type} (${r.persons} Person${r.persons > 1 ? "s" : ""})` : `Card (${r.persons} Person${r.persons > 1 ? "s" : ""})`,
@@ -682,11 +697,13 @@ router.get("/customer-sale", async (req, res) => {
       `SELECT * FROM groups WHERE is_deleted = false ORDER BY booking_date DESC`
     );
     grpRes.rows.forEach((v) => {
+      const cCode = v.customer_code || "WALKIN";
       (v.rows || []).forEach((r, i) => {
         const sar = Number(r.total) || Number(r.persons * r.rate) || 0;
         const rate = Number(v.pkr_rate) || 0;
         rows.push({
           booking_date: v.booking_date,
+          customer_code: cCode,
           customer_name: v.customer_name || "Walk-in Customer",
           ref_no: v.ref_no,
           item: r.type ? `Groups ${i + 1} - ${r.type} (${r.persons} Person${r.persons > 1 ? "s" : ""})` : `Groups (${r.persons} Person${r.persons > 1 ? "s" : ""})`,
@@ -702,6 +719,7 @@ router.get("/customer-sale", async (req, res) => {
       `SELECT * FROM ticketing WHERE is_deleted = false ORDER BY booking_date DESC`
     );
     ticRes.rows.forEach((r) => {
+      const cCode = r.customer_code || "WALKIN";
       const from = Array.isArray(r.flight_from) ? r.flight_from.join(", ") : r.flight_from || "";
       const to = Array.isArray(r.flight_to) ? r.flight_to.join(", ") : r.flight_to || "";
       const airline = Array.isArray(r.airline) ? r.airline.join(", ") : r.airline || "";
@@ -714,6 +732,7 @@ router.get("/customer-sale", async (req, res) => {
         const sar = r.adult_qty * r.adult_rate;
         rows.push({
           booking_date: r.booking_date,
+          customer_code: cCode,
           customer_name: r.customer_name || "Walk-in Customer",
           ref_no: r.ref_no,
           item: `Ticket – Adult (${r.adult_qty} Person${r.adult_qty > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
@@ -726,6 +745,7 @@ router.get("/customer-sale", async (req, res) => {
         const sar = r.child_qty * r.child_rate;
         rows.push({
           booking_date: r.booking_date,
+          customer_code: cCode,
           customer_name: r.customer_name || "Walk-in Customer",
           ref_no: r.ref_no,
           item: `Ticket – Child (${r.child_qty} Person${r.child_qty > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
@@ -738,6 +758,7 @@ router.get("/customer-sale", async (req, res) => {
         const sar = r.infant_qty * r.infant_rate;
         rows.push({
           booking_date: r.booking_date,
+          customer_code: cCode,
           customer_name: r.customer_name || "Walk-in Customer",
           ref_no: r.ref_no,
           item: `Ticket – Infant (${r.infant_qty} Person${r.infant_qty > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
@@ -753,6 +774,7 @@ router.get("/customer-sale", async (req, res) => {
       `SELECT * FROM transport WHERE is_deleted = false ORDER BY booking_date DESC`
     );
     trnRes.rows.forEach((r) => {
+      const cCode = r.customer_code || "WALKIN";
       if (Array.isArray(r.rows)) {
         r.rows.forEach((t, i) => {
           const label = t.description || t.text || t.route || "";
@@ -760,6 +782,7 @@ router.get("/customer-sale", async (req, res) => {
           const rate = Number(r.pkr_rate) || 0;
           rows.push({
             booking_date: r.booking_date,
+            customer_code: cCode,
             customer_name: r.customer_name || "Walk-in Customer",
             ref_no: r.ref_no,
             item: label ? `Transport ${i + 1} - ${label}` : `Transport ${i + 1}`,
@@ -776,6 +799,7 @@ router.get("/customer-sale", async (req, res) => {
       `SELECT * FROM ziyarat WHERE is_deleted = false ORDER BY booking_date DESC`
     );
     ziyRes.rows.forEach((r) => {
+      const cCode = r.customer_code || "WALKIN";
       if (Array.isArray(r.rows)) {
         r.rows.forEach((t, i) => {
           const label = t.description || t.text || t.route || "";
@@ -783,6 +807,7 @@ router.get("/customer-sale", async (req, res) => {
           const rate = Number(r.pkr_rate) || 0;
           rows.push({
             booking_date: r.booking_date,
+            customer_code: cCode,
             customer_name: r.customer_name || "Walk-in Customer",
             ref_no: r.ref_no,
             item: label ? `Ziyarat ${i + 1} - ${label}` : `Ziyarat ${i + 1}`,
