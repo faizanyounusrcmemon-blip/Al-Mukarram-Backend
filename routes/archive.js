@@ -106,9 +106,26 @@ router.post("/preview", async (req, res) => {
     let calculationStartDate = '1970-01-01';
     let lastSnapshotId = 0;
 
-    if (lastSnapshot.rows.length > 0) {
+if (lastSnapshot.rows.length > 0) {
       baseCash = Number(lastSnapshot.rows[0].opening_cash || 0);
-      calculationStartDate = new Date(lastSnapshot.rows[0].date_to).toISOString().split("T")[0];
+      
+      // 👈 FIX: Date shift aur +1 day adjustment taake 01/Mar se live data calculate ho
+      const rawDate = lastSnapshot.rows[0].date_to;
+      let snapshotDate = new Date(rawDate);
+      
+      // Agar string format mein hai toh timezone shift handle karein
+      if (typeof rawDate === 'string') {
+        snapshotDate = new Date(rawDate.split("T")[0]);
+      }
+      
+      // Cutoff date (28/Feb) mein 1 din add karein taake Next Day (01/Mar) ban jaye
+      snapshotDate.setDate(snapshotDate.getDate() + 1);
+      
+      const yyyy = snapshotDate.getFullYear();
+      const mm = String(snapshotDate.getMonth() + 1).padStart(2, '0');
+      const dd = String(snapshotDate.getDate()).padStart(2, '0');
+      
+      calculationStartDate = `${yyyy}-${mm}-${dd}`; // Result: 2026-03-01
       lastSnapshotId = lastSnapshot.rows[0].id;
     }
 
@@ -398,8 +415,11 @@ router.post("/snapshot", async (req, res) => {
     const snapCash = Number(lastSnapshot.rows[0]?.opening_cash || 0);
     let calculationStartDate = '1970-01-01';
 
-    if (lastSnapshot.rows.length > 0) {
-      calculationStartDate = new Date(lastSnapshot.rows[0].date_to).toISOString().split("T")[0];
+if (lastSnapshot.rows.length > 0) {
+      // 28 Feb baseline ke baad agle din (1 Mar) se naya data count hoga
+      const d = new Date(lastSnapshot.rows[0].date_to);
+      d.setDate(d.getDate() + 1);
+      calculationStartDate = d.toISOString().split("T")[0];
     }
 
     // 2. Cash Calculation
