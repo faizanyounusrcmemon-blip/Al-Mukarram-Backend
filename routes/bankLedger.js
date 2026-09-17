@@ -28,7 +28,7 @@ router.get("/", async (req, res) => {
       return res.json({ success: true, rows: [] });
     }
 
-    // 1. Fetch Latest Archive Snapshot Cutoff
+// 1. Fetch Latest Archive Snapshot Cutoff
     const snapshotRes = await pool.query(`
       SELECT id, date_to 
       FROM archive_snapshots 
@@ -42,7 +42,18 @@ router.get("/", async (req, res) => {
 
     if (snapshotRes.rows.length > 0) {
       const snapshotId = snapshotRes.rows[0].id;
-      snapshotDateTo = new Date(snapshotRes.rows[0].date_to).toISOString().split("T")[0];
+      const rawDate = snapshotRes.rows[0].date_to;
+
+      // Fix UTC Timezone Shift Issue
+      if (typeof rawDate === 'string') {
+        snapshotDateTo = rawDate.split("T")[0];
+      } else if (rawDate instanceof Date) {
+        const yyyy = rawDate.getFullYear();
+        const mm = String(rawDate.getMonth() + 1).padStart(2, '0');
+        const dd = String(rawDate.getDate()).padStart(2, '0');
+        snapshotDateTo = `${yyyy}-${mm}-${dd}`;
+      }
+
       hasSnapshot = true;
 
       // 2. Fetch specific Bank's snapshot balance from archive_balances
