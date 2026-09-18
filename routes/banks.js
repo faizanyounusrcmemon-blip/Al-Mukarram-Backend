@@ -46,6 +46,37 @@ router.post("/", async (req, res) => {
 });
 
 /* ======================================================
+   VERIFY PASSWORD FOR BANK EDIT
+====================================================== */
+router.post("/verify-password", async (req, res) => {
+  try {
+    const { password } = req.body;
+
+    if (!password) {
+      return res.json({ success: false, error: "Password required" });
+    }
+
+    const passCheck = await pool.query(
+      "SELECT password_val FROM system_passwords WHERE key_name = $1",
+      ["manage_bank_profile"]
+    );
+
+    if (passCheck.rows.length === 0) {
+      return res.json({ success: false, error: "System password not configured" });
+    }
+
+    if (password === passCheck.rows[0].password_val) {
+      return res.json({ success: true });
+    } else {
+      return res.json({ success: false, error: "Wrong Password" });
+    }
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+
+/* ======================================================
    EDIT BANK PROFILE (PASSWORD AUTHORIZATION)
 ====================================================== */
 router.put("/:id", async (req, res) => {

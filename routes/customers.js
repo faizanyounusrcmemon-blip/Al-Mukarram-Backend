@@ -3,9 +3,22 @@ const router = express.Router();
 const db = require("../db");
 
 /* =====================================
-   AUTO CUSTOMER CODE GENERATOR
+   AUTO CUSTOMER CODE GENERATOR (Auto-Fix Sync Added)
 ===================================== */
 const genCustomerCode = async () => {
+  // ⚡ Sequence Counter Auto-Fix (Sequence ko Max existing code number pe sync karega)
+  await db.query(`
+    SELECT setval(
+      'customer_code_seq', 
+      COALESCE((
+        SELECT MAX(CAST(SUBSTRING(customer_code FROM 6) AS INTEGER)) 
+        FROM customers 
+        WHERE customer_code ~ '^CUST-[0-9]+$'
+      ), 0) + 1, 
+      false
+    );
+  `).catch(() => {});
+
   const r = await db.query("SELECT nextval('customer_code_seq') AS seq");
   return "CUST-" + String(r.rows[0].seq).padStart(5, "0");
 };

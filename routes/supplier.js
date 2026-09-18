@@ -3,9 +3,22 @@ const router = express.Router();
 const db = require("../db");
 
 /* =====================================
-   AUTO SUPPLIER CODE
+   AUTO SUPPLIER CODE (Auto-Fix Sync Added)
 ===================================== */
 const genCode = async () => {
+  // ⚡ Sequence Counter Auto-Fix (Sequence ko Max existing code number pe sync karega)
+  await db.query(`
+    SELECT setval(
+      'suppliers_code_seq', 
+      COALESCE((
+        SELECT MAX(CAST(SUBSTRING(supplier_code FROM 5) AS INTEGER)) 
+        FROM suppliers 
+        WHERE supplier_code ~ '^SUP-[0-9]+$'
+      ), 0) + 1, 
+      false
+    );
+  `).catch(() => {});
+
   const r = await db.query("SELECT nextval('suppliers_code_seq') AS seq");
   return "SUP-" + String(r.rows[0].seq).padStart(4, "0");
 };
