@@ -45,7 +45,6 @@ const TABLES = [
   "cash_transactions",
   "customer_payments",
   "suppliers",
-  "purchase_payments",
   "supplier_payments",
   "ziyarat",
   "archive_snapshots",
@@ -578,7 +577,7 @@ router.post("/fix-sequences", async (req, res) => {
       "banks", "bookings", "expense_ledger", "hotels", "ticketing", "visa", "card",
       "groups", "transport", "customers", "purchase_entries", "users",
       "bank_transactions", "cash_transactions", "customer_payments", "suppliers",
-      "purchase_payments", "supplier_payments", "ziyarat", "archive_snapshots",
+      "supplier_payments", "ziyarat", "archive_snapshots",
       "archive_balances", "archive_profit_monthly", "archive_logs",
       "authority_settings", "system_passwords",
     ];
