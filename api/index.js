@@ -107,17 +107,11 @@ app.use("/api/registered-ledger", require("../routes/registeredLedger"));
 app.use("/customer-ledger", require("../routes/customerLedger"));
 app.use("/api/customer-ledger", require("../routes/customerLedger"));
 
-app.use("/purchase-ledger", require("../routes/purchaseLedger"));
-app.use("/api/purchase-ledger", require("../routes/purchaseLedger"));
-
 app.use("/bank-ledger", require("../routes/bankLedger"));
 app.use("/api/bank-ledger", require("../routes/bankLedger"));
 
 app.use("/cash-ledger", require("../routes/cashLedger"));
 app.use("/api/cash-ledger", require("../routes/cashLedger"));
-
-app.use("/ledger-delete", require("../routes/ledgerDelete"));
-app.use("/api/ledger-delete", require("../routes/ledgerDelete"));
 
 app.use("/balance-sheet", require("../routes/balanceSheet"));
 app.use("/api/balance-sheet", require("../routes/balanceSheet"));
