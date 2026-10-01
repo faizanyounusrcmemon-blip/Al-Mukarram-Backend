@@ -7,9 +7,14 @@ const pool = require("../db");
 ====================================================== */
 router.get("/profiles", async (req, res) => {
   try {
-    const result = await pool.query(
-      "SELECT id, bank_name, account_title, account_number FROM public.banks WHERE LOWER(status) = 'active' ORDER BY id ASC"
-    );
+    const query = `
+      SELECT id, bank_name, account_title, account_number, status 
+      FROM public.banks 
+      WHERE LOWER(COALESCE(status, 'active')) = 'active' 
+        AND COALESCE(is_deleted, false) = false
+      ORDER BY id ASC
+    `;
+    const result = await pool.query(query);
     res.json({ success: true, profiles: result.rows });
   } catch (err) {
     console.error("Bank Profiles Fetch Error:", err);

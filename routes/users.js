@@ -25,10 +25,11 @@ router.post("/create", async (req, res) => {
 
         packages, ticketing, transport, ziyarat, visa, hotels, card, groups,
         purchase_entry, purchase_list, pending_purchase,
-        registered_customer_ledger, customer_ledger, bank_profiles, supplier_ledger, bank_ledger, expense_ledger, balance_sheet, cash_ledger,
+        registered_customer_ledger, customer_ledger, supplier_ledger, bank_ledger, expense_ledger, balance_sheet, cash_ledger,
         hotel_voucher, hotel_voucher3in1, transport_voucher, customiz_transport_voucher, customiz_hotel_voucher,
-        all_reports, all_reports_today, profit_report, monthly_profit_dashboard, sale_adjustment_report, supplier_purchase_detail_report, customer_sale_detail_report, supplier_adjustment_only, item_loss_zero_report, sale_change_check_report,
-        create_user, manage_users, supplier, customers_list, deleted_reports, restore, system_storage, password_settings,
+        all_reports, all_reports_today, profit_report, monthly_profit_dashboard, sale_adjustment_report, supplier_purchase_detail_report, customer_sale_detail_report, supplier_adjustment_only, item_loss_zero_report,
+        sale_change_check_report, gifting_report_view, agent_comm_report_view, upcoming_payment_due_report, upcoming_travel_report,
+        create_user, manage_users, supplier, customers_list, bank_profiles, deleted_reports, restore, system_storage, password_settings,
         archive_manager, archive_list
       )
       VALUES (
@@ -36,10 +37,10 @@ router.post("/create", async (req, res) => {
 
         false, false, false, false, false, false, false, false,
         false, false, false,
-        false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false,
         false, false, false, false, false,
-        false, false, false, false, false, false, false, false, false, false,
-        false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false, false, false,
         false, false
 
       )
@@ -61,29 +62,44 @@ router.post("/create", async (req, res) => {
   }
 });
 
-/* ================= LIST USERS ================= */
+/* ================= LIST USERS (Excluding Soft Deleted) ================= */
 router.get("/list", async (req, res) => {
   try {
-
     const r = await db.query(
       `
       SELECT 
-      id,
-      name,
-      username,
-      password,
-      role,
-      is_active,
-      is_online,
-      last_login,
-      last_logout
+        id,
+        name,
+        username,
+        password,
+        role,
+        is_active,
+        is_online,
+        last_login,
+        last_logout
       FROM users
+      WHERE COALESCE(is_deleted, false) = false
       ORDER BY id DESC
       `
     );
 
     res.json({ success: true, rows: r.rows });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
 
+/* ================= PERMISSIONS LIST ================= */
+router.get("/permissions/list", async (req, res) => {
+  try {
+    const r = await db.query(
+      "SELECT * FROM users WHERE COALESCE(is_deleted, false) = false ORDER BY id ASC"
+    );
+
+    res.json({
+      success: true,
+      rows: r.rows
+    });
   } catch (err) {
     res.json({ success: false, error: err.message });
   }
@@ -154,7 +170,7 @@ router.post("/update", async (req, res) => {
   }
 });
 
-/* ================= DELETE USER (DYNAMIC DB PASSWORD) ================= */
+/* ================= SOFT DELETE USER ================= */
 router.delete("/delete/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -164,7 +180,7 @@ router.delete("/delete/:id", async (req, res) => {
       return res.json({ success: false, error: "Password required" });
     }
 
-    // 🔍 DB Lookup for Delete User Password
+    // DB Lookup for Delete User Password
     const passCheck = await db.query(
       "SELECT password_val FROM public.system_passwords WHERE key_name = 'delete_user_pass'"
     );
@@ -173,13 +189,14 @@ router.delete("/delete/:id", async (req, res) => {
       return res.json({ success: false, error: "Delete user password configuration missing in DB!" });
     }
 
-    // 🔒 Password Match Check
+    // Password Match Check
     if (password !== passCheck.rows[0].password_val) {
       return res.json({ success: false, error: "Invalid security password" });
     }
 
+    // SOFT DELETE: Mark user as deleted and disable account
     const q = await db.query(
-      "DELETE FROM users WHERE id=$1 RETURNING id",
+      "UPDATE users SET is_deleted = true, is_active = false WHERE id = $1 RETURNING id",
       [id]
     );
 
@@ -187,7 +204,7 @@ router.delete("/delete/:id", async (req, res) => {
       return res.json({ success: false, error: "User not found" });
     }
 
-    res.json({ success: true, message: "User deleted successfully" });
+    res.json({ success: true, message: "User soft deleted successfully" });
   } catch (err) {
     console.error("DELETE USER ERROR:", err);
     res.status(500).json({ success: false, error: err.message });
@@ -232,10 +249,11 @@ router.post("/permissions/update", async (req, res) => {
     const perms = [
       "packages","ticketing","transport","ziyarat","visa","hotels","card","groups",
       "purchase_entry","purchase_list","pending_purchase",
-      "registered_customer_ledger","customer_ledger","bank_profiles","supplier_ledger","bank_ledger","expense_ledger","balance_sheet","cash_ledger",
+      "registered_customer_ledger","customer_ledger","supplier_ledger","bank_ledger","expense_ledger","balance_sheet","cash_ledger",
       "hotel_voucher","hotel_voucher3in1","transport_voucher","customiz_transport_voucher","customiz_hotel_voucher",
-      "all_reports","all_reports_today","profit_report","monthly_profit_dashboard","sale_adjustment_report","supplier_purchase_detail_report","customer_sale_detail_report","supplier_adjustment_only","item_loss_zero_report","sale_change_check_report",
-      "create_user","manage_users","supplier","customers_list","deleted_reports","restore","system_storage","password_settings",
+      "all_reports","all_reports_today","profit_report","monthly_profit_dashboard","sale_adjustment_report","supplier_purchase_detail_report","customer_sale_detail_report","supplier_adjustment_only",
+      "item_loss_zero_report","sale_change_check_report","gifting_report_view","agent_comm_report_view","upcoming_payment_due_report","upcoming_travel_report",
+      "create_user","manage_users","supplier","customers_list","bank_profiles","deleted_reports","restore","system_storage","password_settings",
       "archive_manager","archive_list"
     ];
 

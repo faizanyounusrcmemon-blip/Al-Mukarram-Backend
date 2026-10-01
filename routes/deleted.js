@@ -105,6 +105,32 @@ router.get("/list", async (req, res) => {
       FROM customers
       WHERE is_deleted = true
 
+      /* USER / SYSTEM USERS */
+      UNION ALL
+      SELECT
+        'USER' AS type,
+        id::text AS ref_no,
+        username AS customer_name,
+        role AS customer_code,
+        NULL::date AS booking_date,
+        NULL::numeric AS amount,
+        'User' AS customer_type
+      FROM users
+      WHERE is_deleted = true
+
+      /* BANKS */
+      UNION ALL
+      SELECT
+        'BANK' AS type,
+        id::text AS ref_no,
+        bank_name AS customer_name,
+        account_number AS customer_code,
+        NULL::date AS booking_date,
+        NULL::numeric AS amount,
+        'Bank' AS customer_type
+      FROM banks
+      WHERE is_deleted = true
+
       ORDER BY booking_date DESC NULLS LAST
     `);
 
@@ -127,7 +153,6 @@ router.post("/restore", async (req, res) => {
       return res.status(400).json({ success: false, error: "Password required" });
     }
 
-    // 🔑 DB Lookup for Restore Password
     const passCheck = await db.query(
       "SELECT password_val FROM public.system_passwords WHERE key_name = 'restore_report_pass'"
     );
@@ -142,11 +167,8 @@ router.post("/restore", async (req, res) => {
 
     const uppercaseType = type?.toUpperCase();
 
-    // ---------------------------------------------------------
-    // 🛑 PURCHASE RESTORE VALIDATION & EXECUTION
-    // ---------------------------------------------------------
+    /* PURCHASE RESTORE */
     if (uppercaseType === "PURCHASE") {
-      // 1. Check duplicate active purchase
       const activeCheck = await db.query(
         `SELECT id FROM purchase_entries WHERE ref_no = $1 AND is_deleted = false LIMIT 1`,
         [ref_no]
@@ -159,7 +181,6 @@ router.post("/restore", async (req, res) => {
         });
       }
 
-      // 2. Fetch deleted purchase totals
       const deletedPurchase = await db.query(
         `SELECT ref_no, SUM(sale_pkr) AS purchase_sale_pkr 
          FROM purchase_entries 
@@ -172,7 +193,6 @@ router.post("/restore", async (req, res) => {
         return res.status(404).json({ success: false, error: "Deleted purchase entry record nahi mila!" });
       }
 
-      // 3. Parent Active Sale Match Check
       const activeSaleCheck = await db.query(
         `
         SELECT ref_no, total_pkr FROM (
@@ -203,7 +223,6 @@ router.post("/restore", async (req, res) => {
         });
       }
 
-      // 4. Amount match validation
       const activeSalePkr = Number(activeSaleCheck.rows[0].total_pkr || 0);
       const purchaseSalePkr = Number(deletedPurchase.rows[0].purchase_sale_pkr || 0);
 
@@ -214,7 +233,6 @@ router.post("/restore", async (req, res) => {
         });
       }
 
-      // 5. UPDATE Purchase Entry in DB
       const updateResult = await db.query(
         `UPDATE purchase_entries SET is_deleted = false WHERE ref_no = $1 AND is_deleted = true`,
         [ref_no]
@@ -227,10 +245,10 @@ router.post("/restore", async (req, res) => {
       return res.json({ success: true, message: `Purchase ${ref_no} successfully restored.` });
     }
 
-    // ---------------------------------------------------------
-    // 🛑 ALL OTHER TYPES RESTORE EXECUTION (PACKAGE, HOTEL, VISA, ETC)
-    // ---------------------------------------------------------
+    /* OTHER TYPES RESTORE */
     let tableName = "";
+    let columnKey = "ref_no";
+
     if (uppercaseType === "PACKAGE") tableName = "bookings";
     else if (uppercaseType === "HOTEL") tableName = "hotels";
     else if (uppercaseType === "TICKETING") tableName = "ticketing";
@@ -241,13 +259,21 @@ router.post("/restore", async (req, res) => {
     else if (uppercaseType === "GROUPS") tableName = "groups";
     else if (uppercaseType === "SUPPLIER") tableName = "suppliers";
     else if (uppercaseType === "CUSTOMER") tableName = "customers";
+    else if (uppercaseType === "USER") {
+      tableName = "users";
+      columnKey = "id";
+    }
+    else if (uppercaseType === "BANK") {
+      tableName = "banks";
+      columnKey = "id";
+    }
 
     if (!tableName) {
       return res.status(400).json({ success: false, error: "Invalid record type!" });
     }
 
     const restoreRes = await db.query(
-      `UPDATE ${tableName} SET is_deleted = false WHERE ref_no = $1 AND is_deleted = true`,
+      `UPDATE ${tableName} SET is_deleted = false WHERE ${columnKey} = $1 AND is_deleted = true`,
       [ref_no]
     );
 
@@ -264,7 +290,7 @@ router.post("/restore", async (req, res) => {
 });
 
 /* =====================================================
-   🗑 PERMANENT DELETE ROUTE (DYNAMIC DB PASSWORD)
+   PERMANENT DELETE ROUTE
 ===================================================== */
 router.post("/permanent-delete", async (req, res) => {
   try {
@@ -274,7 +300,6 @@ router.post("/permanent-delete", async (req, res) => {
       return res.json({ success: false, error: "Password required" });
     }
 
-    // 🔍 DB Lookup for Permanent Delete Password
     const passCheck = await db.query(
       "SELECT password_val FROM public.system_passwords WHERE key_name = 'perm_delete_report_pass'"
     );
@@ -290,21 +315,29 @@ router.post("/permanent-delete", async (req, res) => {
     let table = "";
     let lookupColumn = "ref_no";
 
-    if (type === "PACKAGE") table = "bookings";
-    else if (type === "HOTEL") table = "hotels";
-    else if (type === "TICKETING") table = "ticketing";
-    else if (type === "VISA") table = "visa";
-    else if (type === "CARD") table = "card";
-    else if (type === "GROUPS") table = "groups";
-    else if (type === "TRANSPORT") table = "transport";
-    else if (type === "ZIYARAT") table = "ziyarat";
-    else if (type === "PURCHASE") table = "purchase_entries";
-    else if (type === "SUPPLIER") {
+    const uppercaseType = type?.toUpperCase();
+
+    if (uppercaseType === "PACKAGE") table = "bookings";
+    else if (uppercaseType === "HOTEL") table = "hotels";
+    else if (uppercaseType === "TICKETING") table = "ticketing";
+    else if (uppercaseType === "VISA") table = "visa";
+    else if (uppercaseType === "CARD") table = "card";
+    else if (uppercaseType === "GROUPS") table = "groups";
+    else if (uppercaseType === "TRANSPORT") table = "transport";
+    else if (uppercaseType === "ZIYARAT") table = "ziyarat";
+    else if (uppercaseType === "PURCHASE") table = "purchase_entries";
+    else if (uppercaseType === "SUPPLIER") {
       table = "suppliers";
       lookupColumn = "supplier_code";
-    } else if (type === "CUSTOMER") {
+    } else if (uppercaseType === "CUSTOMER") {
       table = "customers";
       lookupColumn = "customer_code";
+    } else if (uppercaseType === "USER") {
+      table = "users";
+      lookupColumn = "id";
+    } else if (uppercaseType === "BANK") {
+      table = "banks";
+      lookupColumn = "id";
     } else {
       return res.json({ success: false, error: "Invalid type" });
     }
