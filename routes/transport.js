@@ -2,14 +2,24 @@ const express = require("express");
 const router = express.Router();
 const db = require("../db");
 
-// AUTO REF NO GENERATOR (SAFE VERSION)
+// ⚡ SMART AUTO REF NO GENERATOR (Handles Deleted & Existing Gaps)
 async function generateRef() {
-  await db.query(`
-    CREATE SEQUENCE IF NOT EXISTS transport_ref_seq START WITH 1 INCREMENT BY 1;
+  // Database me se (Active + Deleted) sab se bada numeric Ref No dhoondo
+  const q = await db.query(`
+    SELECT MAX(CAST(SUBSTRING(ref_no FROM 'TRN-([0-9]+)') AS INTEGER)) AS max_no 
+    FROM transport
   `);
 
-  const q = await db.query("SELECT nextval('transport_ref_seq') AS no");
-  return "TRN-" + String(q.rows[0].no).padStart(5, "0");
+  const lastNo = q.rows[0].max_no || 0;
+  const nextNo = lastNo + 1;
+
+  // Sync sequence to avoid gaps if sequence is used elsewhere
+  await db.query(`
+    CREATE SEQUENCE IF NOT EXISTS transport_ref_seq START WITH 1 INCREMENT BY 1;
+    SELECT setval('transport_ref_seq', $1, false);
+  `, [nextNo]).catch(() => {});
+
+  return "TRN-" + String(nextNo).padStart(5, "0");
 }
 
 // ============================================
@@ -21,6 +31,7 @@ router.post("/save", async (req, res) => {
       ref_no,
       customer_code,
       customer_name,
+      sub_customer_name,
       booking_date,
       rows,
       total_sar,
@@ -28,32 +39,24 @@ router.post("/save", async (req, res) => {
       total_pkr,
     } = req.body;
 
-    // Direct value ya rows se calculated value fallback
     const finalSAR = total_sar !== undefined ? total_sar : (rows || []).reduce((s, r) => s + Number(r.total || 0), 0);
     const finalPKR = total_pkr !== undefined ? total_pkr : finalSAR * (Number(pkr_rate) || 0);
 
     let finalRef = ref_no;
 
+    // 🔹 CASE 1: Agar NEW Record hai (ref_no is null/empty)
     if (!finalRef) {
-      // ⚡ Robust Primary Key sequence reset (handles custom/standard sequence names)
-      await db.query(`
-        SELECT setval(
-          COALESCE(pg_get_serial_sequence('transport', 'id'), 'transport_id_seq'), 
-          COALESCE((SELECT MAX(id) FROM transport), 0) + 1, 
-          false
-        );
-      `).catch(() => {});
-
       finalRef = await generateRef();
 
       await db.query(
         `INSERT INTO transport
-         (ref_no, customer_code, customer_name, booking_date, rows, total_sar, pkr_rate, total_pkr)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+         (ref_no, customer_code, customer_name, sub_customer_name, booking_date, rows, total_sar, pkr_rate, total_pkr)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [
           finalRef,
           customer_code || null,
           customer_name,
+          sub_customer_name || null,
           booking_date,
           JSON.stringify(rows || []),
           finalSAR,
@@ -62,19 +65,32 @@ router.post("/save", async (req, res) => {
         ]
       );
     } else {
+      // 🔹 CASE 2: Agar UPDATE karna hai, toh pehle check karo Ref Exist & Not Deleted!
+      const checkRef = await db.query("SELECT is_deleted FROM transport WHERE ref_no=$1", [finalRef]);
+
+      if (checkRef.rows.length === 0) {
+        return res.status(400).json({ success: false, error: `❌ Ref No ${finalRef} does not exist.` });
+      }
+
+      if (checkRef.rows[0].is_deleted) {
+        return res.status(400).json({ success: false, error: `❌ Cannot update ${finalRef}. It is deleted!` });
+      }
+
       await db.query(
         `UPDATE transport SET
            customer_code=$1,
            customer_name=$2,
-           booking_date=$3,
-           rows=$4,
-           total_sar=$5,
-           pkr_rate=$6,
-           total_pkr=$7
-         WHERE ref_no=$8`,
+           sub_customer_name=$3,
+           booking_date=$4,
+           rows=$5,
+           total_sar=$6,
+           pkr_rate=$7,
+           total_pkr=$8
+         WHERE ref_no=$9 AND is_deleted=false`,
         [
           customer_code || null,
           customer_name,
+          sub_customer_name || null,
           booking_date,
           JSON.stringify(rows || []),
           finalSAR,

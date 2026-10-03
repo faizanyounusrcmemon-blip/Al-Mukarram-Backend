@@ -2,18 +2,28 @@ const express = require("express");
 const router = express.Router();
 const db = require("../db");
 
-// AUTO REF NO GENERATOR (SAFE VERSION)
+// ⚡ SMART AUTO REF NO GENERATOR (Handles Deleted & Existing Gaps for Groups)
 async function generateRefNo() {
-  await db.query(`
-    CREATE SEQUENCE IF NOT EXISTS groups_ref_seq START WITH 1 INCREMENT BY 1;
+  // Database me se (Active + Deleted) sab se bada numeric Ref No dhoondo
+  const q = await db.query(`
+    SELECT MAX(CAST(SUBSTRING(ref_no FROM 'GRP-([0-9]+)') AS INTEGER)) AS max_no 
+    FROM groups
   `);
 
-  const q = await db.query("SELECT nextval('groups_ref_seq') AS no");
-  return "GRP-" + String(q.rows[0].no).padStart(5, "0");
+  const lastNo = q.rows[0].max_no || 0;
+  const nextNo = lastNo + 1;
+
+  // Sync sequence to avoid gaps if sequence is used elsewhere
+  await db.query(`
+    CREATE SEQUENCE IF NOT EXISTS groups_ref_seq START WITH 1 INCREMENT BY 1;
+    SELECT setval('groups_ref_seq', $1, false);
+  `, [nextNo]).catch(() => {});
+
+  return "GRP-" + String(nextNo).padStart(5, "0");
 }
 
 // ============================================
-// SAVE / UPDATE GROUPS (UPDATED WITH CUSTOMER_CODE & DATES)
+// SAVE / UPDATE GROUPS (UPDATED WITH SUB_CUSTOMER_NAME)
 // ============================================
 router.post("/save", async (req, res) => {
   try {
@@ -21,6 +31,7 @@ router.post("/save", async (req, res) => {
       ref_no,
       customer_code,
       customer_name,
+      sub_customer_name, // ⚡ ADDED SUB_CUSTOMER_NAME
       booking_date,
       start_date,    
       end_date,      
@@ -29,7 +40,7 @@ router.post("/save", async (req, res) => {
       pkr_rate,
     } = req.body;
 
-    // 🔹 CALCULATED FIELDS
+    // CALCULATED FIELDS
     const totalPersons = (rows || []).reduce((s, r) => s + Number(r.persons || 0), 0);
     const totalSAR = (rows || []).reduce((s, r) => s + Number(r.total || 0), 0);
     const totalPKR = totalSAR * (Number(pkr_rate) || 0);
@@ -37,7 +48,7 @@ router.post("/save", async (req, res) => {
     let finalRef = ref_no;
 
     if (!finalRef) {
-      // ⚡ Auto-fix primary key sequence before inserting new record
+      // Auto-fix primary key sequence before inserting new record
       await db.query(`
         SELECT setval(
           COALESCE(pg_get_serial_sequence('groups', 'id'), 'groups_id_seq'), 
@@ -46,17 +57,18 @@ router.post("/save", async (req, res) => {
         );
       `).catch(() => {});
 
-      // 🔹 NEW INSERT WITH DATES & CUSTOMER CODE
+      // NEW INSERT WITH DATES, CUSTOMER CODE & SUB CUSTOMER NAME
       finalRef = await generateRefNo();
 
       await db.query(
         `INSERT INTO groups
-         (ref_no, customer_code, customer_name, booking_date, start_date, end_date, duration, rows, persons, total_sar, pkr_rate, total_pkr)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+         (ref_no, customer_code, customer_name, sub_customer_name, booking_date, start_date, end_date, duration, rows, persons, total_sar, pkr_rate, total_pkr)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
         [
           finalRef,
           customer_code || null,
           customer_name,
+          sub_customer_name || null,
           booking_date,
           start_date,  
           end_date,    
@@ -69,24 +81,26 @@ router.post("/save", async (req, res) => {
         ]
       );
     } else {
-      // 🔹 UPDATE EXISTING WITH DATES & CUSTOMER CODE
+      // UPDATE EXISTING WITH DATES, CUSTOMER CODE & SUB CUSTOMER NAME
       await db.query(
         `UPDATE groups SET
            customer_code=$1,
            customer_name=$2,
-           booking_date=$3,
-           start_date=$4,
-           end_date=$5,
-           duration=$6,
-           rows=$7,
-           persons=$8,
-           total_sar=$9,
-           pkr_rate=$10,
-           total_pkr=$11
-         WHERE ref_no=$12`,
+           sub_customer_name=$3,
+           booking_date=$4,
+           start_date=$5,
+           end_date=$6,
+           duration=$7,
+           rows=$8,
+           persons=$9,
+           total_sar=$10,
+           pkr_rate=$11,
+           total_pkr=$12
+         WHERE ref_no=$13`,
         [
           customer_code || null,
           customer_name,
+          sub_customer_name || null,
           booking_date,
           start_date,
           end_date,

@@ -2,43 +2,53 @@ const express = require("express");
 const router = express.Router();
 const db = require("../db");
 
-// AUTO REF NO GENERATOR (SAFE VERSION)
+// ⚡ SMART AUTO REF NO GENERATOR (Handles Deleted & Existing Gaps for Card)
 async function generateRefNo() {
-  await db.query(`
-    CREATE SEQUENCE IF NOT EXISTS card_ref_seq START WITH 1 INCREMENT BY 1;
+  // Database me se (Active + Deleted) sab se bada numeric Ref No dhoondo
+  const q = await db.query(`
+    SELECT MAX(CAST(SUBSTRING(ref_no FROM 'CARD-([0-9]+)') AS INTEGER)) AS max_no 
+    FROM card
   `);
 
-  const q = await db.query("SELECT nextval('card_ref_seq') AS no");
-  return "CARD-" + String(q.rows[0].no).padStart(5, "0");
+  const lastNo = q.rows[0].max_no || 0;
+  const nextNo = lastNo + 1;
+
+  // Sync sequence to avoid gaps if sequence is used elsewhere
+  await db.query(`
+    CREATE SEQUENCE IF NOT EXISTS card_ref_seq START WITH 1 INCREMENT BY 1;
+    SELECT setval('card_ref_seq', $1, false);
+  `, [nextNo]).catch(() => {});
+
+  return "CARD-" + String(nextNo).padStart(5, "0");
 }
 
 // ============================================
-// SAVE / UPDATE CARD
+// SAVE / UPDATE CARD (UPDATED WITH SUB_CUSTOMER_NAME)
 // ============================================
 router.post("/save", async (req, res) => {
   try {
     const {
       ref_no,
-      customer_code, // ⚡ React dropdown se empty ya code aayega
+      customer_code,
       customer_name,
+      sub_customer_name, // ⚡ ADDED SUB_CUSTOMER_NAME
       booking_date,
       rows,
       pkr_rate,
     } = req.body;
 
-    // 🔹 CALCULATED FIELDS
+    // CALCULATED FIELDS
     const totalPersons = (rows || []).reduce((s, r) => s + Number(r.persons || 0), 0);
     const totalSAR = (rows || []).reduce((s, r) => s + Number(r.total || 0), 0);
     const totalPKR = totalSAR * (Number(pkr_rate) || 0);
 
     let finalRef = ref_no;
 
-    // ⚡ Logic: code available hai to registered, warna null (Walk-In)
     const finalCustomerCode = customer_code || null;
     const finalStatus = finalCustomerCode ? "CLEARED" : "PENDING";
 
     if (!finalRef) {
-      // ⚡ Auto-fix primary key sequence before inserting new record
+      // Auto-fix primary key sequence before inserting new record
       await db.query(`
         SELECT setval(
           COALESCE(pg_get_serial_sequence('card', 'id'), 'card_id_seq'), 
@@ -47,17 +57,18 @@ router.post("/save", async (req, res) => {
         );
       `).catch(() => {});
 
-      // 🔹 NEW INSERT
+      // NEW INSERT WITH SUB CUSTOMER NAME
       finalRef = await generateRefNo();
 
       await db.query(
         `INSERT INTO card
-         (ref_no, customer_code, customer_name, booking_date, rows, persons, total_sar, pkr_rate, total_pkr, payment_status)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+         (ref_no, customer_code, customer_name, sub_customer_name, booking_date, rows, persons, total_sar, pkr_rate, total_pkr, payment_status)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
         [
           finalRef,
           finalCustomerCode,
           customer_name,
+          sub_customer_name || null,
           booking_date,
           JSON.stringify(rows || []),
           totalPersons,
@@ -68,22 +79,24 @@ router.post("/save", async (req, res) => {
         ]
       );
     } else {
-      // 🔹 UPDATE EXISTING
+      // UPDATE EXISTING WITH SUB CUSTOMER NAME
       await db.query(
         `UPDATE card SET
            customer_code=$1,
            customer_name=$2,
-           booking_date=$3,
-           rows=$4,
-           persons=$5,
-           total_sar=$6,
-           pkr_rate=$7,
-           total_pkr=$8,
-           payment_status=$9
-         WHERE ref_no=$10`,
+           sub_customer_name=$3,
+           booking_date=$4,
+           rows=$5,
+           persons=$6,
+           total_sar=$7,
+           pkr_rate=$8,
+           total_pkr=$9,
+           payment_status=$10
+         WHERE ref_no=$11`,
         [
           finalCustomerCode,
           customer_name,
+          sub_customer_name || null,
           booking_date,
           JSON.stringify(rows || []),
           totalPersons,

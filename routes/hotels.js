@@ -2,14 +2,24 @@ const express = require("express");
 const router = express.Router();
 const db = require("../db");
 
-// AUTO REF GENERATOR (SAFE VERSION)
-async function generateRef() {
-  await db.query(`
-    CREATE SEQUENCE IF NOT EXISTS hotels_ref_seq START WITH 1 INCREMENT BY 1;
+// ⚡ SMART AUTO REF NO GENERATOR (Handles Deleted & Existing Gaps for Hotels)
+async function generateRefNo() {
+  // Database me se (Active + Deleted) sab se bata numeric Ref No dhoondo
+  const q = await db.query(`
+    SELECT MAX(CAST(SUBSTRING(ref_no FROM 'HOT-([0-9]+)') AS INTEGER)) AS max_no 
+    FROM hotels
   `);
 
-  const q = await db.query("SELECT nextval('hotels_ref_seq') AS no");
-  return "HOT-" + String(q.rows[0].no).padStart(5, "0");
+  const lastNo = q.rows[0].max_no || 0;
+  const nextNo = lastNo + 1;
+
+  // Sync sequence to avoid gaps
+  await db.query(`
+    CREATE SEQUENCE IF NOT EXISTS hotels_ref_seq START WITH 1 INCREMENT BY 1;
+    SELECT setval('hotels_ref_seq', $1, false);
+  `, [nextNo]).catch(() => {});
+
+  return "HOT-" + String(nextNo).padStart(5, "0");
 }
 
 // ===================================
@@ -21,6 +31,7 @@ router.post("/save", async (req, res) => {
       ref_no,
       customer_code,
       customer_name,
+      sub_customer_name, // ⚡ ADDED SUB_CUSTOMER_NAME
       agent_name,
       booking_date,
       hotels,
@@ -38,40 +49,42 @@ router.post("/save", async (req, res) => {
         UPDATE hotels SET
           customer_code=$2,
           customer_name=$3,
-          agent_name=$4,
-          booking_date=$5,
-          hotel_checkin=$6,
-          hotel_checkout=$7,
-          hotel_nights=$8,
-          hotel_location=$9,
-          hotel_name=$10,
-          hotel_rooms=$11,
-          hotel_type=$12,
-          hotel_rate=$13,
-          hotel_total=$14,
-          hotels_total=$15,
-          sar_rate=$16,
-          total_pkr=$17
+          sub_customer_name=$4,
+          agent_name=$5,
+          booking_date=$6,
+          hotel_checkin=$7,
+          hotel_checkout=$8,
+          hotel_nights=$9,
+          hotel_location=$10,
+          hotel_name=$11,
+          hotel_rooms=$12,
+          hotel_type=$13,
+          hotel_rate=$14,
+          hotel_total=$15,
+          hotels_total=$16,
+          sar_rate=$17,
+          total_pkr=$18
         WHERE ref_no=$1
         `,
         [
-          ref_no,                                       // $1
-          customer_code || null,                        // $2
-          customer_name,                                // $3
-          agent_name,                                   // $4
-          booking_date,                                 // $5
-          JSON.stringify((hotels || []).map(h => h.checkIn)),   // $6
-          JSON.stringify((hotels || []).map(h => h.checkOut)),  // $7
-          JSON.stringify((hotels || []).map(h => h.nights)),    // $8
-          JSON.stringify((hotels || []).map(h => h.location)),  // $9
-          JSON.stringify((hotels || []).map(h => h.hotel)),     // $10
-          JSON.stringify((hotels || []).map(h => h.rooms)),     // $11
-          JSON.stringify((hotels || []).map(h => h.type)),      // $12
-          JSON.stringify((hotels || []).map(h => h.rate)),      // $13
-          JSON.stringify((hotels || []).map(h => h.total)),     // $14
-          hotels_total,                                 // $15
-          sar_rate,                                     // $16
-          total_pkr,                                    // $17
+          ref_no,                                             // $1
+          customer_code || null,                              // $2
+          customer_name,                                      // $3
+          sub_customer_name || null,                          // $4
+          agent_name,                                         // $5
+          booking_date,                                       // $6
+          JSON.stringify((hotels || []).map(h => h.checkIn)), // $7
+          JSON.stringify((hotels || []).map(h => h.checkOut)),// $8
+          JSON.stringify((hotels || []).map(h => h.nights)),  // $9
+          JSON.stringify((hotels || []).map(h => h.location)),// $10
+          JSON.stringify((hotels || []).map(h => h.hotel)),   // $11
+          JSON.stringify((hotels || []).map(h => h.rooms)),   // $12
+          JSON.stringify((hotels || []).map(h => h.type)),    // $13
+          JSON.stringify((hotels || []).map(h => h.rate)),    // $14
+          JSON.stringify((hotels || []).map(h => h.total)),   // $15
+          hotels_total,                                       // $16
+          sar_rate,                                           // $17
+          total_pkr,                                          // $18
         ]
       );
 
@@ -82,7 +95,7 @@ router.post("/save", async (req, res) => {
     // NEW MODE (INSERT)
     // =========================
 
-    // ⚡ Auto-fix primary key sequence before inserting new record
+    // Auto-fix primary key sequence before inserting new record
     await db.query(`
       SELECT setval(
         COALESCE(pg_get_serial_sequence('hotels', 'id'), 'hotels_id_seq'), 
@@ -91,7 +104,8 @@ router.post("/save", async (req, res) => {
       );
     `).catch(() => {});
 
-    const newRef = await generateRef();
+    // ⚡ Generate Smart Ref No
+    const newRef = await generateRefNo();
 
     await db.query(
       `
@@ -100,6 +114,7 @@ router.post("/save", async (req, res) => {
         ref_no,
         customer_code,
         customer_name,
+        sub_customer_name,
         agent_name,
         booking_date,
         hotel_checkin,
@@ -116,26 +131,27 @@ router.post("/save", async (req, res) => {
         total_pkr
       )
       VALUES
-      ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+      ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
       `,
       [
-        newRef,                                       // $1
-        customer_code || null,                        // $2
-        customer_name,                                // $3
-        agent_name,                                   // $4
-        booking_date,                                 // $5
-        JSON.stringify((hotels || []).map(h => h.checkIn)), // $6
-        JSON.stringify((hotels || []).map(h => h.checkOut)),// $7
-        JSON.stringify((hotels || []).map(h => h.nights)),  // $8
-        JSON.stringify((hotels || []).map(h => h.location)),// $9
-        JSON.stringify((hotels || []).map(h => h.hotel)),   // $10
-        JSON.stringify((hotels || []).map(h => h.rooms)),   // $11
-        JSON.stringify((hotels || []).map(h => h.type)),    // $12
-        JSON.stringify((hotels || []).map(h => h.rate)),    // $13
-        JSON.stringify((hotels || []).map(h => h.total)),   // $14
-        hotels_total,                                 // $15
-        sar_rate,                                     // $16
-        total_pkr,                                    // $17
+        newRef,                                             // $1
+        customer_code || null,                              // $2
+        customer_name,                                      // $3
+        sub_customer_name || null,                          // $4
+        agent_name,                                         // $5
+        booking_date,                                       // $6
+        JSON.stringify((hotels || []).map(h => h.checkIn)), // $7
+        JSON.stringify((hotels || []).map(h => h.checkOut)),// $8
+        JSON.stringify((hotels || []).map(h => h.nights)),  // $9
+        JSON.stringify((hotels || []).map(h => h.location)),// $10
+        JSON.stringify((hotels || []).map(h => h.hotel)),   // $11
+        JSON.stringify((hotels || []).map(h => h.rooms)),   // $12
+        JSON.stringify((hotels || []).map(h => h.type)),    // $13
+        JSON.stringify((hotels || []).map(h => h.rate)),    // $14
+        JSON.stringify((hotels || []).map(h => h.total)),   // $15
+        hotels_total,                                       // $16
+        sar_rate,                                           // $17
+        total_pkr,                                          // $18
       ]
     );
 
@@ -146,6 +162,55 @@ router.post("/save", async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
+// ===================================
+// GET HOTEL BY REF (EDIT + VOUCHER)
+// ===================================
+router.get("/get/:ref", async (req, res) => {
+  try {
+    const q = await db.query(
+      "SELECT * FROM hotels WHERE ref_no=$1 AND is_deleted=false",
+      [req.params.ref]
+    );
+
+    if (q.rows.length === 0) {
+      return res.json({ success: false });
+    }
+
+    const r = q.rows[0];
+
+    const hotels = (r.hotel_name || []).map((_, i) => ({
+      hotel: r.hotel_name[i],
+      location: r.hotel_location?.[i] || "",
+      checkIn: r.hotel_checkin?.[i] || "",
+      checkOut: r.hotel_checkout?.[i] || "",
+      nights: r.hotel_nights?.[i] || 0,
+      rooms: r.hotel_rooms?.[i] || 0,
+      type: r.hotel_type?.[i] || "",
+      rate: r.hotel_rate?.[i] || 0,
+      total: r.hotel_total?.[i] || 0,
+    }));
+
+    res.json({
+      success: true,
+      row: {
+        ref_no: r.ref_no,
+        customer_code: r.customer_code || "",
+        customer_name: r.customer_name,
+        sub_customer_name: r.sub_customer_name || "", // ⚡ RETURN SUB CUSTOMER NAME
+        agent_name: r.agent_name || "",
+        booking_date: r.booking_date,
+        hotels,
+        hotels_total: r.hotels_total,
+        sar_rate: r.sar_rate,
+        total_pkr: r.total_pkr,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 
 // ===================================
 // GET HOTEL BY REF (EDIT + VOUCHER)

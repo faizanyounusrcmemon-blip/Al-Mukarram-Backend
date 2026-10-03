@@ -2,15 +2,25 @@ const express = require("express");
 const router = express.Router();
 const db = require("../db");
 
-// AUTO REF (SAFE VERSION)
+// ⚡ SMART AUTO REF NO GENERATOR (Handles Deleted & Existing Gaps)
 async function generateRef() {
-  await db.query(`
-    CREATE SEQUENCE IF NOT EXISTS ziyarat_ref_seq START WITH 1 INCREMENT BY 1;
+  const q = await db.query(`
+    SELECT MAX(CAST(SUBSTRING(ref_no FROM 'ZIY-([0-9]+)') AS INTEGER)) AS max_no 
+    FROM ziyarat
   `);
 
-  const q = await db.query("SELECT nextval('ziyarat_ref_seq') AS no");
-  return "ZIY-" + String(q.rows[0].no).padStart(5, "0");
+  const lastNo = q.rows[0].max_no || 0;
+  const nextNo = lastNo + 1;
+
+  await db.query(`
+    CREATE SEQUENCE IF NOT EXISTS ziyarat_ref_seq START WITH 1 INCREMENT BY 1;
+    SELECT setval('ziyarat_ref_seq', $1, false);
+  `, [nextNo]).catch(() => {});
+
+  return "ZIY-" + String(nextNo).padStart(5, "0");
 }
+
+
 
 // ========================
 // SAVE / UPDATE
@@ -21,6 +31,7 @@ router.post("/save", async (req, res) => {
       ref_no,
       customer_code,
       customer_name,
+      sub_customer_name,
       booking_date,
       rows,
       total_sar,
@@ -31,7 +42,7 @@ router.post("/save", async (req, res) => {
     let finalRef = ref_no;
 
     if (!finalRef) {
-      // ⚡ Auto-fix primary key sequence before inserting new record
+      // ⚡ Primary Key Auto-Increment Sync Fix
       await db.query(`
         SELECT setval(
           COALESCE(pg_get_serial_sequence('ziyarat', 'id'), 'ziyarat_id_seq'), 
@@ -40,18 +51,20 @@ router.post("/save", async (req, res) => {
         );
       `).catch(() => {});
 
+      // 🔹 NEW INSERT (Generates clean incremental ZIY-XXXXX Ref)
       finalRef = await generateRef();
 
       await db.query(
         `
         INSERT INTO ziyarat
-        (ref_no, customer_code, customer_name, booking_date, rows, total_sar, pkr_rate, total_pkr)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+        (ref_no, customer_code, customer_name, sub_customer_name, booking_date, rows, total_sar, pkr_rate, total_pkr)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
         `,
         [
           finalRef,
           customer_code || null,
           customer_name,
+          sub_customer_name || null,
           booking_date,
           JSON.stringify(rows || []),
           total_sar,
@@ -60,21 +73,24 @@ router.post("/save", async (req, res) => {
         ]
       );
     } else {
+      // 🔹 UPDATE EXISTING RECORD
       await db.query(
         `
         UPDATE ziyarat SET
           customer_code=$1,
           customer_name=$2,
-          booking_date=$3,
-          rows=$4,
-          total_sar=$5,
-          pkr_rate=$6,
-          total_pkr=$7
-        WHERE ref_no=$8
+          sub_customer_name=$3,
+          booking_date=$4,
+          rows=$5,
+          total_sar=$6,
+          pkr_rate=$7,
+          total_pkr=$8
+        WHERE ref_no=$9
         `,
         [
           customer_code || null,
           customer_name,
+          sub_customer_name || null,
           booking_date,
           JSON.stringify(rows || []),
           total_sar,
@@ -92,6 +108,8 @@ router.post("/save", async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
+
 
 // ========================
 // GET BY REF

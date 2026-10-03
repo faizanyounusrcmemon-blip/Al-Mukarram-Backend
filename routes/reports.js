@@ -207,7 +207,7 @@ router.get("/all", async (req, res) => {
   try {
     const q = await db.query(`
       SELECT 
-        'Packages' AS type, id, ref_no, customer_name, customer_code, booking_date, total_pkr,
+        'Packages' AS type, id, ref_no, customer_name, sub_customer_name, customer_code, booking_date, total_pkr,
         CASE 
           WHEN customer_code IS NOT NULL AND TRIM(customer_code) != '' THEN 'Registered'
           ELSE 'Walk-in'
@@ -216,7 +216,7 @@ router.get("/all", async (req, res) => {
 
       UNION ALL
       SELECT 
-        'Ticketing', id, ref_no, customer_name, customer_code, booking_date, total_pkr,
+        'Ticketing', id, ref_no, customer_name, sub_customer_name, customer_code, booking_date, total_pkr,
         CASE 
           WHEN customer_code IS NOT NULL AND TRIM(customer_code) != '' THEN 'Registered'
           ELSE 'Walk-in'
@@ -225,7 +225,7 @@ router.get("/all", async (req, res) => {
 
       UNION ALL
       SELECT 
-        'Hotels', id, ref_no, customer_name, customer_code, booking_date, total_pkr,
+        'Hotels', id, ref_no, customer_name, sub_customer_name, customer_code, booking_date, total_pkr,
         CASE 
           WHEN customer_code IS NOT NULL AND TRIM(customer_code) != '' THEN 'Registered'
           ELSE 'Walk-in'
@@ -234,7 +234,7 @@ router.get("/all", async (req, res) => {
 
       UNION ALL
       SELECT 
-        'Visa', id, ref_no, customer_name, customer_code, booking_date, total_pkr,
+        'Visa', id, ref_no, customer_name, sub_customer_name, customer_code, booking_date, total_pkr,
         CASE 
           WHEN customer_code IS NOT NULL AND TRIM(customer_code) != '' THEN 'Registered'
           ELSE 'Walk-in'
@@ -243,7 +243,7 @@ router.get("/all", async (req, res) => {
 
       UNION ALL
       SELECT 
-        'Card', id, ref_no, customer_name, customer_code, booking_date, total_pkr,
+        'Card', id, ref_no, customer_name, sub_customer_name, customer_code, booking_date, total_pkr,
         CASE 
           WHEN customer_code IS NOT NULL AND TRIM(customer_code) != '' THEN 'Registered'
           ELSE 'Walk-in'
@@ -252,7 +252,7 @@ router.get("/all", async (req, res) => {
 
       UNION ALL
       SELECT 
-        'Groups', id, ref_no, customer_name, customer_code, booking_date, total_pkr,
+        'Groups', id, ref_no, customer_name, sub_customer_name, customer_code, booking_date, total_pkr,
         CASE 
           WHEN customer_code IS NOT NULL AND TRIM(customer_code) != '' THEN 'Registered'
           ELSE 'Walk-in'
@@ -261,7 +261,7 @@ router.get("/all", async (req, res) => {
 
       UNION ALL
       SELECT 
-        'Transport', id, ref_no, customer_name, customer_code, booking_date, total_pkr,
+        'Transport', id, ref_no, customer_name, sub_customer_name, customer_code, booking_date, total_pkr,
         CASE 
           WHEN customer_code IS NOT NULL AND TRIM(customer_code) != '' THEN 'Registered'
           ELSE 'Walk-in'
@@ -270,7 +270,7 @@ router.get("/all", async (req, res) => {
 
       UNION ALL
       SELECT 
-        'Ziyarat', id, ref_no, customer_name, customer_code, booking_date, total_pkr,
+        'Ziyarat', id, ref_no, customer_name, sub_customer_name, customer_code, booking_date, total_pkr,
         CASE 
           WHEN customer_code IS NOT NULL AND TRIM(customer_code) != '' THEN 'Registered'
           ELSE 'Walk-in'

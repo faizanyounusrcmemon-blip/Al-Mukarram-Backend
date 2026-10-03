@@ -2,18 +2,26 @@ const express = require("express");
 const router = express.Router();
 const db = require("../db");
 
-// AUTO REF NO (SAFE VERSION)
+// ⚡ SMART AUTO REF NO GENERATOR (Handles Deleted & Existing Gaps)
 async function generateRefNo() {
-  await db.query(`
-    CREATE SEQUENCE IF NOT EXISTS ticketing_ref_seq START WITH 1 INCREMENT BY 1;
+  const q = await db.query(`
+    SELECT MAX(CAST(SUBSTRING(ref_no FROM 'TIC-([0-9]+)') AS INTEGER)) AS max_no 
+    FROM ticketing
   `);
 
-  const q = await db.query("SELECT nextval('ticketing_ref_seq') AS no");
-  return "TIC-" + String(q.rows[0].no).padStart(5, "0");
+  const lastNo = q.rows[0].max_no || 0;
+  const nextNo = lastNo + 1;
+
+  await db.query(`
+    CREATE SEQUENCE IF NOT EXISTS ticketing_ref_seq START WITH 1 INCREMENT BY 1;
+    SELECT setval('ticketing_ref_seq', $1, false);
+  `, [nextNo]).catch(() => {});
+
+  return "TIC-" + String(nextNo).padStart(5, "0");
 }
 
 // ========================
-// SAVE / UPDATE (WITH CUSTOMER_CODE)
+// SAVE / UPDATE (WITH CUSTOMER_CODE & SUB_CUSTOMER_NAME)
 // ========================
 router.post("/save", async (req, res) => {
   try {
@@ -21,6 +29,7 @@ router.post("/save", async (req, res) => {
       ref_no,
       customer_code,
       customer_name,
+      sub_customer_name,
       booking_date,
       flights, // [{from,to,date,airline}]
       adultQty,
@@ -40,15 +49,6 @@ router.post("/save", async (req, res) => {
     // NEW ENTRY
     // ========================
     if (!finalRef) {
-      // ⚡ Auto-fix primary key sequence before inserting new record
-      await db.query(`
-        SELECT setval(
-          COALESCE(pg_get_serial_sequence('ticketing', 'id'), 'ticketing_id_seq'), 
-          COALESCE((SELECT MAX(id) FROM ticketing), 0) + 1, 
-          false
-        );
-      `).catch(() => {});
-
       finalRef = await generateRefNo();
 
       await db.query(
@@ -58,6 +58,7 @@ router.post("/save", async (req, res) => {
           ref_no,
           customer_code,
           customer_name,
+          sub_customer_name,
           booking_date,
 
           flight_from,
@@ -77,12 +78,13 @@ router.post("/save", async (req, res) => {
           total_pkr
         )
         VALUES
-        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
         `,
         [
           finalRef,
           customer_code || null,
           customer_name,
+          sub_customer_name || null,
           booking_date,
 
           JSON.stringify((flights || []).map(f => f.from)),
@@ -108,33 +110,45 @@ router.post("/save", async (req, res) => {
     // EDIT ENTRY
     // ========================
     else {
+      const checkRef = await db.query("SELECT is_deleted FROM ticketing WHERE ref_no=$1", [finalRef]);
+
+      if (checkRef.rows.length === 0) {
+        return res.status(400).json({ success: false, error: `❌ Ref No ${finalRef} does not exist.` });
+      }
+
+      if (checkRef.rows[0].is_deleted) {
+        return res.status(400).json({ success: false, error: `❌ Cannot update ${finalRef}. It is deleted!` });
+      }
+
       await db.query(
         `
         UPDATE ticketing SET
           customer_code=$1,
           customer_name=$2,
-          booking_date=$3,
+          sub_customer_name=$3,
+          booking_date=$4,
 
-          flight_from=$4,
-          flight_to=$5,
-          flight_date=$6,
-          airline=$7,
+          flight_from=$5,
+          flight_to=$6,
+          flight_date=$7,
+          airline=$8,
 
-          adult_qty=$8,
-          adult_rate=$9,
-          child_qty=$10,
-          child_rate=$11,
-          infant_qty=$12,
-          infant_rate=$13,
+          adult_qty=$9,
+          adult_rate=$10,
+          child_qty=$11,
+          child_rate=$12,
+          infant_qty=$13,
+          infant_rate=$14,
 
-          total_sar=$14,
-          pkr_rate=$15,
-          total_pkr=$16
-        WHERE ref_no=$17
+          total_sar=$15,
+          pkr_rate=$16,
+          total_pkr=$17
+        WHERE ref_no=$18 AND is_deleted=false
         `,
         [
           customer_code || null,
           customer_name,
+          sub_customer_name || null,
           booking_date,
 
           JSON.stringify((flights || []).map(f => f.from)),
@@ -164,6 +178,8 @@ router.post("/save", async (req, res) => {
     res.status(500).json({ success: false, error: err.message });
   }
 });
+
+
 
 // ========================
 // GET BY REF (EDIT / VIEW)
