@@ -300,6 +300,7 @@ router.get("/:supplierCode", async (req, res) => {
       openingBalance = Number(bal.rows[0]?.balance || 0);
     }
 
+
 const purchases = await db.query(`
   SELECT 
     pe.id, 
@@ -346,7 +347,28 @@ const purchases = await db.query(`
       ), 'N/A'
     ) AS customer_name,
 
-    -- 3. Customer Type (REGISTERED / WALK-IN) Lookup
+     -- 3. Sub Customer Name Lookup
+COALESCE(
+  (
+    SELECT sub_customer_name FROM (
+      SELECT ref_no, sub_customer_name FROM bookings WHERE is_deleted = false
+      UNION ALL SELECT ref_no, sub_customer_name FROM hotels WHERE is_deleted = false
+      UNION ALL SELECT ref_no, sub_customer_name FROM visa WHERE is_deleted = false
+      UNION ALL SELECT ref_no, sub_customer_name FROM card WHERE is_deleted = false
+      UNION ALL SELECT ref_no, sub_customer_name FROM groups WHERE is_deleted = false
+      UNION ALL SELECT ref_no, sub_customer_name FROM ticketing WHERE is_deleted = false
+      UNION ALL SELECT ref_no, sub_customer_name FROM transport WHERE is_deleted = false
+      UNION ALL SELECT ref_no, sub_customer_name FROM ziyarat WHERE is_deleted = false
+    ) sub_cust_all 
+    WHERE sub_cust_all.ref_no = pe.ref_no 
+      AND sub_customer_name IS NOT NULL 
+      AND sub_customer_name != '' 
+    LIMIT 1
+  ), '-'
+) AS sub_customer_name,
+
+
+    -- 4. Customer Type (REGISTERED / WALK-IN) Lookup
     COALESCE(
       (
         SELECT 
