@@ -314,13 +314,26 @@ router.get("/get/:ref", async (req, res) => {
 router.get("/voucher/:ref", async (req, res) => {
   try {
     const q = await db.query(
-      "SELECT ref_no, customer_name, booking_date, hotels FROM bookings WHERE ref_no=$1",
+      `SELECT ref_no, customer_name, sub_customer_name, agent_name, booking_date, hotels 
+       FROM bookings WHERE ref_no=$1 AND is_deleted=false`,
       [req.params.ref]
     );
 
     if (!q.rows.length) return res.json({ success: false });
 
-    res.json({ success: true, ...q.rows[0] });
+    const r = q.rows[0];
+
+    res.json({ 
+      success: true, 
+      row: {
+        ref_no: r.ref_no,
+        customer_name: r.customer_name || "",
+        sub_customer_name: r.sub_customer_name || "",
+        agent_name: r.agent_name || "",
+        booking_date: r.booking_date,
+        hotels: r.hotels || []
+      }
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
