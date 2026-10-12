@@ -830,6 +830,620 @@ router.get("/customer-sale", async (req, res) => {
   }
 });
 
+/* =====================================================
+   🔹 CUSTOMER SALE DETAIL LEDGER ROUTE (WITH INFANT & BANK SUPPORT)
+===================================================== */
+router.get("/customer-sale-detail-ledger", async (req, res) => {
+  try {
+    const { customer_code, from_date, to_date } = req.query;
+
+    // 1. Fetch Registered Customers List (Ordered by Customer Code)
+    const custRes = await db.query(
+      `SELECT customer_code AS code, name FROM customers WHERE is_deleted = false ORDER BY customer_code ASC`
+    );
+    const customerList = custRes.rows;
+
+    let rows = [];
+
+    // 2. Fetch Latest Archive Snapshot Info
+    const snapshotRes = await db.query(`
+      SELECT id, date_to 
+      FROM archive_snapshots 
+      ORDER BY date_to DESC, id DESC 
+      LIMIT 1
+    `);
+
+    let snapshotDateTo = "1970-01-01";
+    let customerBaseline = 0;
+    let hasSnapshot = false;
+
+    if (snapshotRes.rows.length > 0 && customer_code && customer_code !== "ALL" && customer_code !== "WALKIN") {
+      const snapshotId = snapshotRes.rows[0].id;
+      snapshotDateTo = new Date(snapshotRes.rows[0].date_to).toISOString().split("T")[0];
+      hasSnapshot = true;
+
+      const custBalRes = await db.query(
+        `SELECT balance FROM archive_balances WHERE snapshot_id = $1 AND UPPER(balance_type) = 'CUSTOMER' AND code = $2 LIMIT 1`,
+        [snapshotId, customer_code]
+      );
+
+      if (custBalRes.rows.length > 0) {
+        customerBaseline = Math.round(Number(custBalRes.rows[0].balance || 0));
+      }
+    }
+
+    const isDateValid = (dateStr) => {
+      if (!dateStr) return false;
+      const d = new Date(dateStr).toISOString().split("T")[0];
+      if (hasSnapshot && d <= snapshotDateTo) return false;
+      if (from_date && d < from_date) return false;
+      if (to_date && d > to_date) return false;
+      return true;
+    };
+
+    const validRefsMap = new Map();
+
+    const isCustomerValid = (cCode, cName, refNo) => {
+      if (!customer_code || customer_code === "ALL") return true;
+      const targetCode = (cCode || "").trim().toUpperCase();
+      const filter = customer_code.trim().toUpperCase();
+
+      if (filter === "WALKIN") {
+        return !targetCode || targetCode === "WALKIN" || targetCode === "";
+      }
+
+      // Direct Code Match
+      if (targetCode === filter) return true;
+
+      // Fallback via Ref No mapping
+      if (refNo) {
+        const mappedCode = validRefsMap.get(refNo.trim().toUpperCase());
+        if (mappedCode && mappedCode.toUpperCase() === filter) return true;
+      }
+
+      return false;
+    };
+
+    const safeParse = (val) => {
+      if (!val) return [];
+      if (Array.isArray(val)) return val;
+      try { return JSON.parse(val); } catch { return []; }
+    };
+
+    // 3. BOOKINGS (PACKAGES) BREAKDOWN
+    const pkgRes = await db.query(`SELECT * FROM bookings WHERE is_deleted = false ORDER BY booking_date ASC, id ASC`);
+    pkgRes.rows.forEach((s) => {
+      const cCode = s.customer_code ? s.customer_code.trim() : "";
+      const cName = s.customer_name || "Walk-in Customer";
+      if (s.ref_no) validRefsMap.set(s.ref_no.trim().toUpperCase(), cCode || "WALKIN");
+
+      if (!isCustomerValid(cCode, cName, s.ref_no) || !isDateValid(s.booking_date)) return;
+
+      const flights = safeParse(s.flights);
+      let airline = "", from = "", to = "";
+      if (flights.length > 0) {
+        const f = flights[0];
+        airline = f.airline || f.airline_name || "";
+        from = f.from || f.flight_from || "";
+        to = f.to || f.flight_to || "";
+      }
+      const extraInfo = [airline, from && to ? `${from} → ${to}` : ""].filter(Boolean).join(" | ");
+
+      // Adults
+      if (Number(s.adult_count) > 0) {
+        const count = Number(s.adult_count);
+        const adultRateSar = Number(s.adult_rate || 0);
+        const rate = Number(s.flight_sar_rate) || Number(s.pkr_rate) || (adultRateSar > 0 ? Number(Number(s.flight_pkr || 0) / (count * adultRateSar)) : 0);
+        const sar = Math.round(count * adultRateSar);
+        const pkr = Math.round(Number(s.flight_pkr) || (sar * rate));
+        rows.push({
+          id: `PKG-ADT-${s.id}`,
+          date: s.booking_date,
+          customer_code: cCode || "WALKIN",
+          customer_name: cName,
+          ref_no: s.ref_no,
+          item: `Ticket – Adult (${count} Person${count > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          type: "SALE",
+          sale_sar: sar,
+          sale_rate: rate,
+          sale_pkr: pkr,
+          payment_pkr: 0
+        });
+      }
+
+      // Child
+      if (Number(s.child_count) > 0) {
+        const count = Number(s.child_count);
+        const childRateSar = Number(s.child_rate || 0);
+        const rate = Number(s.flight_sar_rate) || Number(s.pkr_rate) || 0;
+        const sar = Math.round(count * childRateSar);
+        const pkr = Math.round(sar * rate);
+        rows.push({
+          id: `PKG-CHD-${s.id}`,
+          date: s.booking_date,
+          customer_code: cCode || "WALKIN",
+          customer_name: cName,
+          ref_no: s.ref_no,
+          item: `Ticket – Child (${count} Person${count > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          type: "SALE",
+          sale_sar: sar,
+          sale_rate: rate,
+          sale_pkr: pkr,
+          payment_pkr: 0
+        });
+      }
+
+      // Infant
+      if (Number(s.infant_count) > 0) {
+        const count = Number(s.infant_count);
+        const infantRateSar = Number(s.infant_rate || 0);
+        const rate = Number(s.flight_sar_rate) || Number(s.pkr_rate) || 0;
+        const sar = Math.round(count * infantRateSar);
+        const pkr = Math.round(sar * rate);
+        rows.push({
+          id: `PKG-INF-${s.id}`,
+          date: s.booking_date,
+          customer_code: cCode || "WALKIN",
+          customer_name: cName,
+          ref_no: s.ref_no,
+          item: `Ticket – Infant (${count} Person${count > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          type: "SALE",
+          sale_sar: sar,
+          sale_rate: rate,
+          sale_pkr: pkr,
+          payment_pkr: 0
+        });
+      }
+
+      // Hotels
+      safeParse(s.hotels).forEach((h, i) => {
+        const rooms = Number(h.rooms) || 0;
+        const nights = Number(h.nights) || 0;
+        const type = h.type ? h.type.toUpperCase() : "";
+        const sar = Math.round(Number(h.total) || 0);
+        const rate = Number(s.hotel_sar_rate) || Number(s.pkr_rate) || 0;
+        rows.push({
+          id: `PKG-HOT-${s.id}-${i}`,
+          date: s.booking_date,
+          customer_code: cCode || "WALKIN",
+          customer_name: cName,
+          ref_no: s.ref_no,
+          item: `Hotel ${i + 1} - ${h.hotel || ""} (${type}${type ? ", " : ""}${rooms} Room${rooms > 1 ? "s" : ""}, ${nights} Night${nights > 1 ? "s" : ""})`,
+          type: "SALE",
+          sale_sar: sar,
+          sale_rate: rate,
+          sale_pkr: Math.round(sar * rate),
+          payment_pkr: 0
+        });
+      });
+
+      // Visa
+      safeParse(s.visa).forEach((v, i) => {
+        const persons = Number(v.persons || 0);
+        const sar = Math.round(Number(v.total ?? (persons * Number(v.rate || 0))));
+        const rate = Number(s.visa_sar_rate) || Number(s.pkr_rate) || 0;
+        const itemName = v.type
+          ? `Visa ${i + 1} - ${v.type} (${persons} Person${persons > 1 ? "s" : ""})`
+          : `Visa ${i + 1} (${persons} Person${persons > 1 ? "s" : ""})`;
+
+        rows.push({
+          id: `PKG-VIS-${s.id}-${i}`,
+          date: s.booking_date,
+          customer_code: cCode || "WALKIN",
+          customer_name: cName,
+          ref_no: s.ref_no,
+          item: itemName,
+          type: "SALE",
+          sale_sar: sar,
+          sale_rate: rate,
+          sale_pkr: Math.round(sar * rate),
+          payment_pkr: 0
+        });
+      });
+
+      // Transport
+      safeParse(s.transport).forEach((t, i) => {
+        const base = `Transport ${i + 1}`;
+        const label = t.text || t.route || t.description || "";
+        
+        let formattedDate = "";
+        if (t.date) {
+          const d = new Date(t.date);
+          if (!isNaN(d.getTime())) {
+            const day = String(d.getDate()).padStart(2, "0");
+            const mon = d.toLocaleString("en-US", { month: "short" }).toUpperCase();
+            const year = d.getFullYear();
+            formattedDate = ` (${day}/${mon}/${year})`;
+          }
+        }
+
+        const sar = Math.round(Number(t.amount || t.total || 0));
+        const rate = Number(s.transport_sar_rate) || Number(s.pkr_rate) || 0;
+        rows.push({
+          id: `PKG-TRN-${s.id}-${i}`,
+          date: s.booking_date,
+          customer_code: cCode || "WALKIN",
+          customer_name: cName,
+          ref_no: s.ref_no,
+          item: label ? `${base}${formattedDate} - ${label}` : `${base}${formattedDate}`,
+          type: "SALE",
+          sale_sar: sar,
+          sale_rate: rate,
+          sale_pkr: Math.round(sar * rate),
+          payment_pkr: 0
+        });
+      });
+
+      // Ziyarat
+      safeParse(s.ziyarat).forEach((z, i) => {
+        const base = `Ziyarat ${i + 1}`;
+        const label = z.text || z.route || z.description || "";
+        const sar = Math.round(Number(z.amount || z.total || 0));
+        const rate = Number(s.ziyarat_sar_rate) || Number(s.pkr_rate) || 0;
+        rows.push({
+          id: `PKG-ZIY-${s.id}-${i}`,
+          date: s.booking_date,
+          customer_code: cCode || "WALKIN",
+          customer_name: cName,
+          ref_no: s.ref_no,
+          item: label ? `${base} - ${label}` : base,
+          type: "SALE",
+          sale_sar: sar,
+          sale_rate: rate,
+          sale_pkr: Math.round(sar * rate),
+          payment_pkr: 0
+        });
+      });
+
+      // Agent Commission
+      if (s.show_agent_comm) {
+        const commList = safeParse(s.agent_comm);
+        if (commList.length > 0) {
+          commList.forEach((ac, i) => {
+            const persons = Number(ac.persons || ac.qty || 1);
+            const ratePkr = Number(ac.rate || ac.rate_pkr || 0);
+            const totalPkr = Math.round(Number(ac.total || ac.amount || (persons * ratePkr) || 0));
+
+            const agentName = ac.agent_name || ac.name || ac.title || ac.type || "";
+            const personText = ` (${persons} Person${persons > 1 ? "s" : ""})`;
+
+            rows.push({
+              id: `PKG-COMM-${s.id}-${i}`,
+              date: s.booking_date,
+              customer_code: cCode || "WALKIN",
+              customer_name: cName,
+              ref_no: s.ref_no,
+              item: agentName 
+                ? `Agent Commission ${i + 1} - ${agentName}${personText}` 
+                : `Agent Commission ${i + 1}${personText}`,
+              type: "SALE",
+              sale_sar: totalPkr,
+              sale_rate: 1,
+              sale_pkr: totalPkr,
+              payment_pkr: 0
+            });
+          });
+        } else if (Number(s.agent_comm_total) > 0) {
+          const totalPkr = Math.round(Number(s.agent_comm_total));
+          rows.push({
+            id: `PKG-COMM-${s.id}`,
+            date: s.booking_date,
+            customer_code: cCode || "WALKIN",
+            customer_name: cName,
+            ref_no: s.ref_no,
+            item: `Agent Commission`,
+            type: "SALE",
+            sale_sar: totalPkr,
+            sale_rate: 1,
+            sale_pkr: totalPkr,
+            payment_pkr: 0
+          });
+        }
+      }
+    });
+
+    // 4. HOTELS ONLY (HOT-)
+    const hotRes = await db.query(`SELECT * FROM hotels WHERE is_deleted = false ORDER BY booking_date ASC, id ASC`);
+    hotRes.rows.forEach((r) => {
+      const cCode = r.customer_code ? r.customer_code.trim() : "";
+      const cName = r.customer_name || "Walk-in Customer";
+      if (r.ref_no) validRefsMap.set(r.ref_no.trim().toUpperCase(), cCode || "WALKIN");
+
+      if (!isCustomerValid(cCode, cName, r.ref_no) || !isDateValid(r.booking_date)) return;
+
+      const names = safeParse(r.hotel_name);
+      if (names.length > 0) {
+        names.forEach((name, i) => {
+          const type = r.hotel_type?.[i] ? r.hotel_type[i].toUpperCase() : "";
+          const rooms = Number(r.hotel_rooms?.[i]) || 0;
+          const nights = Number(r.hotel_nights?.[i]) || 0;
+          const sar = Math.round(Number(r.hotel_total?.[i]) || 0);
+          const rate = Number(r.sar_rate) || Number(r.pkr_rate) || 0;
+          rows.push({
+            id: `HOT-${r.id}-${i}`,
+            date: r.booking_date,
+            customer_code: cCode || "WALKIN",
+            customer_name: cName,
+            ref_no: r.ref_no,
+            item: `Hotel ${i + 1} - ${name} (${type}${type ? ", " : ""}${rooms} Room${rooms > 1 ? "s" : ""}, ${nights} Night${nights > 1 ? "s" : ""})`,
+            type: "SALE",
+            sale_sar: sar,
+            sale_rate: rate,
+            sale_pkr: Math.round(sar * rate),
+            payment_pkr: 0
+          });
+        });
+      }
+    });
+
+    // 5. TICKETING ONLY (TIC-)
+    const ticRes = await db.query(`SELECT * FROM ticketing WHERE is_deleted = false ORDER BY booking_date ASC, id ASC`);
+    ticRes.rows.forEach((r) => {
+      const cCode = r.customer_code ? r.customer_code.trim() : "";
+      const cName = r.customer_name || "Walk-in Customer";
+      if (r.ref_no) validRefsMap.set(r.ref_no.trim().toUpperCase(), cCode || "WALKIN");
+
+      if (!isCustomerValid(cCode, cName, r.ref_no) || !isDateValid(r.booking_date)) return;
+
+      const from = Array.isArray(r.flight_from) ? r.flight_from.join(", ") : r.flight_from || "";
+      const to = Array.isArray(r.flight_to) ? r.flight_to.join(", ") : r.flight_to || "";
+      const airline = Array.isArray(r.airline) ? r.airline.join(", ") : r.airline || "";
+      const routeText = from && to ? `${from} → ${to}` : "";
+      const extraInfo = [airline, routeText].filter(Boolean).join(" | ");
+      const rate = Number(r.pkr_rate) || Number(r.sar_rate) || 0;
+
+      if (Number(r.adult_qty) > 0) {
+        const sar = Math.round(Number(r.adult_qty) * Number(r.adult_rate || 0));
+        rows.push({
+          id: `TIC-ADT-${r.id}`,
+          date: r.booking_date,
+          customer_code: cCode || "WALKIN",
+          customer_name: cName,
+          ref_no: r.ref_no,
+          item: `Ticket – Adult (${r.adult_qty} Person${r.adult_qty > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          type: "SALE",
+          sale_sar: sar,
+          sale_rate: rate,
+          sale_pkr: Math.round(sar * rate),
+          payment_pkr: 0
+        });
+      }
+      if (Number(r.child_qty) > 0) {
+        const sar = Math.round(Number(r.child_qty) * Number(r.child_rate || 0));
+        rows.push({
+          id: `TIC-CHD-${r.id}`,
+          date: r.booking_date,
+          customer_code: cCode || "WALKIN",
+          customer_name: cName,
+          ref_no: r.ref_no,
+          item: `Ticket – Child (${r.child_qty} Person${r.child_qty > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          type: "SALE",
+          sale_sar: sar,
+          sale_rate: rate,
+          sale_pkr: Math.round(sar * rate),
+          payment_pkr: 0
+        });
+      }
+      if (Number(r.infant_qty) > 0) {
+        const sar = Math.round(Number(r.infant_qty) * Number(r.infant_rate || 0));
+        rows.push({
+          id: `TIC-INF-${r.id}`,
+          date: r.booking_date,
+          customer_code: cCode || "WALKIN",
+          customer_name: cName,
+          ref_no: r.ref_no,
+          item: `Ticket – Infant (${r.infant_qty} Person${r.infant_qty > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          type: "SALE",
+          sale_sar: sar,
+          sale_rate: rate,
+          sale_pkr: Math.round(sar * rate),
+          payment_pkr: 0
+        });
+      }
+    });
+
+    // 6. OTHER MODULES BREAKDOWN (VISA, CARD, GROUPS, TRANSPORT, ZIYARAT)
+    const otherTables = [
+      { name: "visa", prefix: "VISA", title: "Visa" },
+      { name: "card", prefix: "CARD", title: "Card" },
+      { name: "groups", prefix: "GRP", title: "Groups" },
+      { name: "transport", prefix: "TRN", title: "Transport" },
+      { name: "ziyarat", prefix: "ZIY", title: "Ziyarat" }
+    ];
+
+    for (const t of otherTables) {
+      const modRes = await db.query(`SELECT * FROM ${t.name} WHERE is_deleted = false ORDER BY booking_date ASC, id ASC`);
+      modRes.rows.forEach((r) => {
+        let cCode = r.customer_code ? r.customer_code.trim() : "";
+        const cName = r.customer_name || "Walk-in Customer";
+        
+        if (r.ref_no) {
+          const existingRefCode = validRefsMap.get(r.ref_no.trim().toUpperCase());
+          if (!cCode && existingRefCode) {
+            cCode = existingRefCode;
+          } else if (r.ref_no) {
+            validRefsMap.set(r.ref_no.trim().toUpperCase(), cCode || "WALKIN");
+          }
+        }
+
+        if (!isCustomerValid(cCode, cName, r.ref_no) || !isDateValid(r.booking_date)) return;
+
+        const subRows = safeParse(r.rows);
+        const rate = Number(r.pkr_rate || r.sar_rate || 0);
+
+        if (subRows.length > 0) {
+          subRows.forEach((rowItem, i) => {
+            let itemLabel = "";
+
+            if (t.name === "transport") {
+              const base = `Transport ${i + 1}`;
+              const label = rowItem.description || rowItem.text || rowItem.route || "";
+              let formattedDate = "";
+              if (rowItem.date) {
+                const d = new Date(rowItem.date);
+                if (!isNaN(d.getTime())) {
+                  const day = String(d.getDate()).padStart(2, "0");
+                  const mon = d.toLocaleString("en-US", { month: "short" }).toUpperCase();
+                  const year = d.getFullYear();
+                  formattedDate = ` (${day}/${mon}/${year})`;
+                }
+              }
+              itemLabel = label ? `${base}${formattedDate} - ${label}` : `${base}${formattedDate}`;
+            } else if (t.name === "ziyarat") {
+              const base = `Ziyarat ${i + 1}`;
+              const label = rowItem.description || rowItem.text || rowItem.route || "";
+              itemLabel = label ? `${base} - ${label}` : base;
+            } else {
+              const persons = Number(rowItem.persons || 0);
+              itemLabel = rowItem.type
+                ? `${t.title} ${i + 1} - ${rowItem.type} (${persons} Person${persons > 1 ? "s" : ""})`
+                : `${t.title} (${persons} Person${persons > 1 ? "s" : ""})`;
+            }
+
+            const sar = Math.round(Number(rowItem.sar || rowItem.total || (Number(rowItem.persons || 0) * Number(rowItem.rate || 0)) || 0));
+
+            rows.push({
+              id: `${t.prefix}-${r.id}-${i}`,
+              date: r.booking_date,
+              customer_code: cCode || "WALKIN",
+              customer_name: cName,
+              ref_no: r.ref_no,
+              item: itemLabel,
+              type: "SALE",
+              sale_sar: sar,
+              sale_rate: rate,
+              sale_pkr: Math.round(sar * rate),
+              payment_pkr: 0
+            });
+          });
+        } else {
+          rows.push({
+            id: `${t.prefix}-${r.id}`,
+            date: r.booking_date,
+            customer_code: cCode || "WALKIN",
+            customer_name: cName,
+            ref_no: r.ref_no,
+            item: `${t.title} Entry - Ref: ${r.ref_no}`,
+            type: "SALE",
+            sale_sar: Math.round(Number(r.total_sar || 0)),
+            sale_rate: rate,
+            sale_pkr: Math.round(Number(r.total_pkr || 0)),
+            payment_pkr: 0
+          });
+        }
+      });
+    }
+
+    // 7. PAYMENTS & OPENING BALANCES (DEEP WALK-IN & REGISTERED NAME RESOLUTION)
+    const payRes = await db.query(`
+      SELECT cp.*, b.bank_name, 
+             COALESCE(
+               cust.name,
+               arch.name,
+               (SELECT customer_name FROM bookings WHERE TRIM(LOWER(ref_no)) = TRIM(LOWER(cp.ref_no)) AND customer_name IS NOT NULL AND customer_name != '' AND customer_name != 'Walk-in Customer' LIMIT 1),
+               (SELECT customer_name FROM hotels WHERE TRIM(LOWER(ref_no)) = TRIM(LOWER(cp.ref_no)) AND customer_name IS NOT NULL AND customer_name != '' AND customer_name != 'Walk-in Customer' LIMIT 1),
+               (SELECT customer_name FROM visa WHERE TRIM(LOWER(ref_no)) = TRIM(LOWER(cp.ref_no)) AND customer_name IS NOT NULL AND customer_name != '' AND customer_name != 'Walk-in Customer' LIMIT 1),
+               (SELECT customer_name FROM card WHERE TRIM(LOWER(ref_no)) = TRIM(LOWER(cp.ref_no)) AND customer_name IS NOT NULL AND customer_name != '' AND customer_name != 'Walk-in Customer' LIMIT 1),
+               (SELECT customer_name FROM groups WHERE TRIM(LOWER(ref_no)) = TRIM(LOWER(cp.ref_no)) AND customer_name IS NOT NULL AND customer_name != '' AND customer_name != 'Walk-in Customer' LIMIT 1),
+               (SELECT customer_name FROM ticketing WHERE TRIM(LOWER(ref_no)) = TRIM(LOWER(cp.ref_no)) AND customer_name IS NOT NULL AND customer_name != '' AND customer_name != 'Walk-in Customer' LIMIT 1),
+               (SELECT customer_name FROM transport WHERE TRIM(LOWER(ref_no)) = TRIM(LOWER(cp.ref_no)) AND customer_name IS NOT NULL AND customer_name != '' AND customer_name != 'Walk-in Customer' LIMIT 1),
+               (SELECT customer_name FROM ziyarat WHERE TRIM(LOWER(ref_no)) = TRIM(LOWER(cp.ref_no)) AND customer_name IS NOT NULL AND customer_name != '' AND customer_name != 'Walk-in Customer' LIMIT 1),
+               'Walk-in Customer'
+             ) AS resolved_name
+      FROM customer_payments cp
+      LEFT JOIN public.banks b ON b.id = cp.bank_profile_id
+      LEFT JOIN customers cust ON cust.customer_code = cp.ref_no AND cust.is_deleted = false
+      LEFT JOIN archive_balances arch ON TRIM(LOWER(arch.code)) = TRIM(LOWER(cp.ref_no)) AND arch.balance_type = 'CUSTOMER'
+      WHERE (cp.is_deleted IS NOT TRUE OR cp.is_deleted = false)
+      ORDER BY cp.payment_date ASC, cp.id ASC
+    `);
+
+    payRes.rows.forEach((p) => {
+      const pRef = p.ref_no ? p.ref_no.trim().toUpperCase() : "";
+      const cCode = validRefsMap.get(pRef) || pRef;
+      
+      let resolvedCustomerName = p.resolved_name;
+      if (!resolvedCustomerName || resolvedCustomerName === "Walk-in Customer") {
+        const existingSale = rows.find(r => r.ref_no && r.ref_no.trim().toUpperCase() === pRef && r.customer_name && r.customer_name !== "Walk-in Customer");
+        if (existingSale) {
+          resolvedCustomerName = existingSale.customer_name;
+        } else {
+          resolvedCustomerName = "Walk-in Customer";
+        }
+      }
+
+      if (customer_code === "WALKIN") {
+        const isRegisteredRef = Array.from(validRefsMap.values()).includes(pRef) && pRef.startsWith("CUST-");
+        if (isRegisteredRef) return;
+      }
+
+      if (!isCustomerValid(cCode, resolvedCustomerName, p.ref_no) || !isDateValid(p.payment_date)) return;
+
+      if (p.type === "opening_balance") {
+        rows.push({
+          id: `PAY-OP-${p.id}`,
+          date: p.payment_date,
+          customer_code: cCode,
+          customer_name: resolvedCustomerName,
+          ref_no: p.ref_no,
+          item: `🔑 Opening Balance`,
+          type: "SALE",
+          sale_sar: 0,
+          sale_rate: 0,
+          sale_pkr: Math.round(Number(p.amount || 0)),
+          payment_pkr: 0
+        });
+      } else {
+        let methodText = p.payment_method || "Cash";
+        if (p.payment_method?.toLowerCase() === "bank" && p.bank_name) {
+          methodText = `Bank (${p.bank_name})`;
+        }
+
+        rows.push({
+          id: `PAY-${p.id}`,
+          date: p.payment_date,
+          customer_code: cCode,
+          customer_name: resolvedCustomerName,
+          ref_no: p.ref_no,
+          item: p.type === "adjustment" ? `⚙️ Adjustment` : `💵 Payment Received (${methodText})`,
+          type: "PAYMENT",
+          sale_sar: 0,
+          sale_rate: 0,
+          sale_pkr: 0,
+          payment_pkr: Math.round(Number(p.amount || 0))
+        });
+      }
+    });
+
+// 8. CHRONOLOGICAL SORTING (SAME DATE PAR SALE PEHLE, PAYMENT BAAD MEIN)
+    rows.sort((a, b) => {
+      const dateA = new Date(a.date).getTime();
+      const dateB = new Date(b.date).getTime();
+      
+      // 1. Pehle Tariq (Date) ke hisab se sort karein
+      if (dateA !== dateB) return dateA - dateB;
+
+      // 2. Agar Tariq same ho, to SALE (priority 1) ko PAYMENT (priority 2) se pehle rakhein
+      const priorityA = a.type === "SALE" ? 1 : 2;
+      const priorityB = b.type === "SALE" ? 1 : 2;
+      if (priorityA !== priorityB) return priorityA - priorityB;
+
+      // 3. Phir ID ke hisab se sort karein
+      return String(a.id).localeCompare(String(b.id), undefined, { numeric: true });
+    });
+
+    res.json({
+      success: true,
+      customers: customerList,
+      rows,
+      customerBaseline
+    });
+  } catch (err) {
+    console.error("CUSTOMER SALE DETAIL LEDGER ERROR:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 
 
 module.exports = router;
