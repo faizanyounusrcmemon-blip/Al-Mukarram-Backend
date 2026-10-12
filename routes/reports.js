@@ -469,8 +469,8 @@ router.get("/today-restricted", async (req, res) => {
 
 
 /* =====================================================
-   🔹 CUSTOMER SALE DETAIL REPORT (DIRECT FROM SALES TABLES)
-   - Fetches registered active customers from customers table
+    🔹 CUSTOMER SALE DETAIL REPORT (DIRECT FROM SALES TABLES)
+    - Fetches registered active customers from customers table
 ===================================================== */
 router.get("/customer-sale", async (req, res) => {
   try {
@@ -584,18 +584,33 @@ router.get("/customer-sale", async (req, res) => {
         });
       }
 
-      // Transport
+      // Transport (With Date & Detail)
       if (Array.isArray(s.transport)) {
         s.transport.forEach((t, i) => {
+          const base = `Transport ${i + 1}`;
           const label = t.text || t.route || t.description || "";
+
+          // DD/MMM/YYYY Date Formatting
+          let formattedDate = "";
+          if (t.date) {
+            const d = new Date(t.date);
+            if (!isNaN(d.getTime())) {
+              const day = String(d.getDate()).padStart(2, "0");
+              const mon = d.toLocaleString("en-US", { month: "short" }).toUpperCase();
+              const year = d.getFullYear();
+              formattedDate = ` (${day}/${mon}/${year})`;
+            }
+          }
+
           const sar = Number(t.amount) || 0;
           const rate = Number(s.transport_sar_rate) || 0;
+
           rows.push({
             booking_date: s.booking_date,
             customer_code: cCode,
             customer_name: s.customer_name || "Walk-in Customer",
             ref_no: s.ref_no,
-            item: label ? `Transport ${i + 1} - ${label}` : `Transport ${i + 1}`,
+            item: label ? `${base}${formattedDate} - ${label}` : `${base}${formattedDate}`,
             sale_sar: sar,
             sale_rate: rate,
             sale_pkr: sar * rate,
@@ -603,23 +618,64 @@ router.get("/customer-sale", async (req, res) => {
         });
       }
 
-      // Ziyarat
+      // Ziyarat (With Label Detail)
       if (Array.isArray(s.ziyarat)) {
         s.ziyarat.forEach((t, i) => {
+          const base = `Ziyarat ${i + 1}`;
           const label = t.text || t.route || t.description || "";
           const sar = Number(t.amount) || 0;
           const rate = Number(s.ziyarat_sar_rate) || 0;
+
           rows.push({
             booking_date: s.booking_date,
             customer_code: cCode,
             customer_name: s.customer_name || "Walk-in Customer",
             ref_no: s.ref_no,
-            item: label ? `Ziyarat ${i + 1} - ${label}` : `Ziyarat ${i + 1}`,
+            item: label ? `${base} - ${label}` : base,
             sale_sar: sar,
             sale_rate: rate,
             sale_pkr: sar * rate,
           });
         });
+      }
+
+      // ========= AGENT COMMISSION =========
+      if (s.show_agent_comm) {
+        if (Array.isArray(s.agent_comm) && s.agent_comm.length > 0) {
+          s.agent_comm.forEach((ac, i) => {
+            const persons = Number(ac.persons || ac.qty || 1);
+            const ratePkr = Number(ac.rate || ac.rate_pkr || 0);
+            const totalPkr = Number(ac.total || ac.amount || (persons * ratePkr) || 0);
+
+            const agentName = ac.agent_name || ac.name || ac.title || ac.type || "";
+            const personText = ` (${persons} Person${persons > 1 ? "s" : ""})`;
+
+            rows.push({
+              booking_date: s.booking_date,
+              customer_code: cCode,
+              customer_name: s.customer_name || "Walk-in Customer",
+              ref_no: s.ref_no,
+              item: agentName 
+                ? `Agent Commission ${i + 1} - ${agentName}${personText}` 
+                : `Agent Commission ${i + 1}${personText}`,
+              sale_sar: totalPkr,
+              sale_rate: 1,
+              sale_pkr: totalPkr,
+            });
+          });
+        } else if (Number(s.agent_comm_total) > 0) {
+          const totalPkr = Number(s.agent_comm_total);
+          rows.push({
+            booking_date: s.booking_date,
+            customer_code: cCode,
+            customer_name: s.customer_name || "Walk-in Customer",
+            ref_no: s.ref_no,
+            item: `Agent Commission`,
+            sale_sar: totalPkr,
+            sale_rate: 1,
+            sale_pkr: totalPkr,
+          });
+        }
       }
     });
 
@@ -769,7 +825,7 @@ router.get("/customer-sale", async (req, res) => {
       }
     });
 
-    // 8. TRANSPORT ONLY (TRN-)
+// 8. TRANSPORT ONLY (TRN-)
     const trnRes = await db.query(
       `SELECT * FROM transport WHERE is_deleted = false ORDER BY booking_date DESC`
     );
@@ -777,15 +833,32 @@ router.get("/customer-sale", async (req, res) => {
       const cCode = r.customer_code || "WALKIN";
       if (Array.isArray(r.rows)) {
         r.rows.forEach((t, i) => {
+          const base = `Transport ${i + 1}`;
           const label = t.description || t.text || t.route || "";
-          const sar = Number(t.sar) || 0;
+
+          // 🔹 Traveling Date Extraction (Checking all possible property names & parent row date)
+          const rawDate = t.date || t.travelDate || t.travel_date || r.date || r.travel_date;
+          let formattedDate = "";
+          
+          if (rawDate) {
+            const d = new Date(rawDate);
+            if (!isNaN(d.getTime())) {
+              const day = String(d.getDate()).padStart(2, "0");
+              const mon = d.toLocaleString("en-US", { month: "short" }).toUpperCase();
+              const year = d.getFullYear();
+              formattedDate = ` (${day}/${mon}/${year})`;
+            }
+          }
+
+          const sar = Number(t.sar || t.amount) || 0;
           const rate = Number(r.pkr_rate) || 0;
+
           rows.push({
             booking_date: r.booking_date,
             customer_code: cCode,
             customer_name: r.customer_name || "Walk-in Customer",
             ref_no: r.ref_no,
-            item: label ? `Transport ${i + 1} - ${label}` : `Transport ${i + 1}`,
+            item: label ? `${base}${formattedDate} - ${label}` : `${base}${formattedDate}`,
             sale_sar: sar,
             sale_rate: rate,
             sale_pkr: sar * rate,
@@ -802,15 +875,17 @@ router.get("/customer-sale", async (req, res) => {
       const cCode = r.customer_code || "WALKIN";
       if (Array.isArray(r.rows)) {
         r.rows.forEach((t, i) => {
+          const base = `Ziyarat ${i + 1}`;
           const label = t.description || t.text || t.route || "";
-          const sar = Number(t.sar) || 0;
+          const sar = Number(t.sar || t.amount) || 0;
           const rate = Number(r.pkr_rate) || 0;
+
           rows.push({
             booking_date: r.booking_date,
             customer_code: cCode,
             customer_name: r.customer_name || "Walk-in Customer",
             ref_no: r.ref_no,
-            item: label ? `Ziyarat ${i + 1} - ${label}` : `Ziyarat ${i + 1}`,
+            item: label ? `${base} - ${label}` : base,
             sale_sar: sar,
             sale_rate: rate,
             sale_pkr: sar * rate,
@@ -1275,18 +1350,22 @@ router.get("/customer-sale-detail-ledger", async (req, res) => {
           subRows.forEach((rowItem, i) => {
             let itemLabel = "";
 
-            if (t.name === "transport") {
-              const base = `Transport ${i + 1}`;
-              const label = rowItem.description || rowItem.text || rowItem.route || "";
-              let formattedDate = "";
-              if (rowItem.date) {
-                const d = new Date(rowItem.date);
-                if (!isNaN(d.getTime())) {
-                  const day = String(d.getDate()).padStart(2, "0");
-                  const mon = d.toLocaleString("en-US", { month: "short" }).toUpperCase();
-                  const year = d.getFullYear();
-                  formattedDate = ` (${day}/${mon}/${year})`;
-                }
+if (t.name === "transport") {
+            const base = `Transport ${i + 1}`;
+            const label = rowItem.description || rowItem.text || rowItem.route || "";
+            let formattedDate = "";
+            
+            // 🔹 Traveling Date Extraction & DD/MMM/YYYY Format Logic
+            const rawDate = rowItem.date || rowItem.travelDate || rowItem.travel_date || r.date || r.travel_date;
+            if (rawDate) {
+              const d = new Date(rawDate);
+              if (!isNaN(d.getTime())) {
+                const day = String(d.getDate()).padStart(2, "0");
+                const mon = d.toLocaleString("en-US", { month: "short" }).toUpperCase();
+                const year = d.getFullYear();
+                formattedDate = ` (${day}/${mon}/${year})`;
+              }
+
               }
               itemLabel = label ? `${base}${formattedDate} - ${label}` : `${base}${formattedDate}`;
             } else if (t.name === "ziyarat") {
