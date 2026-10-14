@@ -3,7 +3,7 @@ const router = express.Router();
 const db = require("../db");
 
 /* =====================================================
-   LOAD PURCHASE (SAVE + EDIT AUTO) ✅ SUPPLIER INCLUDED
+   LOAD PURCHASE (UNIVERSAL SMART DESCRIPTION UPDATE) ✅
 ===================================================== */
 router.get("/load/:ref_no", async (req, res) => {
   try {
@@ -32,85 +32,96 @@ router.get("/load/:ref_no", async (req, res) => {
       if (!q.rows.length) return res.json({ success:false, error:"Package not found" });
       salesRow = q.rows[0];
 
-      // TICKETS
-// ========= SAFE FLIGHT INFO =========
-let airline = "";
-let from = "";
-let to = "";
+      let airline = "";
+      let from = "";
+      let to = "";
 
-if (Array.isArray(salesRow.flights) && salesRow.flights.length > 0) {
-  const f = salesRow.flights[0]; // first segment (agar multiple ho to baad me loop bhi kar sakte ho)
+      if (Array.isArray(salesRow.flights) && salesRow.flights.length > 0) {
+        const f = salesRow.flights[0];
+        airline = f.airline || f.airline_name || "";
+        from = f.from || f.flight_from || "";
+        to = f.to || f.flight_to || "";
+      }
 
-  airline = f.airline || f.airline_name || "";
-  from = f.from || f.flight_from || "";
-  to = f.to || f.flight_to || "";
-}
+      const routeText = from && to ? `${from} → ${to}` : "";
+      const extraInfo = [airline, routeText].filter(Boolean).join(" | ");
 
-const routeText = from && to ? `${from} → ${to}` : "";
-const extraInfo = [airline, routeText].filter(Boolean).join(" | ");
+      // TICKETS (Per Person)
+      if (salesRow.adult_count > 0) {
+        const qty = Number(salesRow.adult_count);
+        const rateSar = Number(salesRow.adult_rate);
+        rows.push({
+          item: `Ticket – Adult (${qty} Person${qty > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          unit_qty: qty,
+          sale_per_unit: rateSar,
+          sale_sar: qty * rateSar,
+          sale_rate: salesRow.flight_sar_rate || 0,
+          sale_pkr: (qty * rateSar) * (salesRow.flight_sar_rate || 0),
+        });
+      }
 
+      if (salesRow.child_count > 0) {
+        const qty = Number(salesRow.child_count);
+        const rateSar = Number(salesRow.child_rate);
+        rows.push({
+          item: `Ticket – Child (${qty} Person${qty > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          unit_qty: qty,
+          sale_per_unit: rateSar,
+          sale_sar: qty * rateSar,
+          sale_rate: salesRow.flight_sar_rate || 0,
+          sale_pkr: (qty * rateSar) * (salesRow.flight_sar_rate || 0),
+        });
+      }
 
-// ========= TICKETS =========
-if (salesRow.adult_count > 0)
-  rows.push({
-    item: `Ticket – Adult (${salesRow.adult_count} Person${salesRow.adult_count > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
-    sale_sar: salesRow.adult_count * salesRow.adult_rate,
-    sale_rate: salesRow.flight_sar_rate || 0,
-    sale_pkr:
-      (salesRow.adult_count * salesRow.adult_rate) *
-      (salesRow.flight_sar_rate || 0),
-  });
+      if (salesRow.infant_count > 0) {
+        const qty = Number(salesRow.infant_count);
+        const rateSar = Number(salesRow.infant_rate);
+        rows.push({
+          item: `Ticket – Infant (${qty} Person${qty > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          unit_qty: qty,
+          sale_per_unit: rateSar,
+          sale_sar: qty * rateSar,
+          sale_rate: salesRow.flight_sar_rate || 0,
+          sale_pkr: (qty * rateSar) * (salesRow.flight_sar_rate || 0),
+        });
+      }
 
-if (salesRow.child_count > 0)
-  rows.push({
-    item: `Ticket – Child (${salesRow.child_count} Person${salesRow.child_count > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
-    sale_sar: salesRow.child_count * salesRow.child_rate,
-    sale_rate: salesRow.flight_sar_rate || 0,
-    sale_pkr:
-      (salesRow.child_count * salesRow.child_rate) *
-      (salesRow.flight_sar_rate || 0),
-  });
-
-if (salesRow.infant_count > 0)
-  rows.push({
-    item: `Ticket – Infant (${salesRow.infant_count} Person${salesRow.infant_count > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
-    sale_sar: salesRow.infant_count * salesRow.infant_rate,
-    sale_rate: salesRow.flight_sar_rate || 0,
-    sale_pkr:
-      (salesRow.infant_count * salesRow.infant_rate) *
-      (salesRow.flight_sar_rate || 0),
-  });
-
-      // HOTELS
+      // HOTELS (Per Nights / Rooms calculation factor)
       if (Array.isArray(salesRow.hotels)) {
         salesRow.hotels.forEach((h, i) => {
-          const rooms = Number(h.rooms) || 0;
-          const nights = Number(h.nights) || 0;
+          const rooms = Number(h.rooms) || 1;
+          const nights = Number(h.nights) || 1;
+          const unitFactor = rooms * nights;
+          const totalSar = Number(h.total) || 0;
+          const perUnit = unitFactor > 0 ? totalSar / unitFactor : 0;
           const type = h.type ? h.type.toUpperCase() : "";
 
           rows.push({
             item: `Hotel ${i + 1} - ${h.hotel || ""} (${type}${type ? ", " : ""}${rooms} Room${rooms > 1 ? "s" : ""}, ${nights} Night${nights > 1 ? "s" : ""})`,
-            sale_sar: Number(h.total) || 0,
+            unit_qty: unitFactor,
+            sale_per_unit: perUnit,
+            sale_sar: totalSar,
             sale_rate: salesRow.hotel_sar_rate || 0,
-            sale_pkr:
-              (Number(h.total) || 0) * (salesRow.hotel_sar_rate || 0),
+            sale_pkr: totalSar * (salesRow.hotel_sar_rate || 0),
           });
         });
       }
 
-      // ---- VISA ----
+      // VISA (Per Person)
       if (Array.isArray(salesRow.visa)) {
-        salesRow.visa.forEach((v,i) => {
-          const persons = Number(v.persons || 0);
-          const rate = Number(v.rate || 0);
+        salesRow.visa.forEach((v, i) => {
+          const persons = Number(v.persons) || 1;
+          const rate = Number(v.rate) || 0;
           const total = Number(v.total ?? (persons * rate));
 
           const itemName = v.type
-            ? `Visa ${i+1} - ${v.type} (${persons} Person${persons>1?"s":""})`
-            : `Visa ${i+1} (${persons} Person${persons>1?"s":""})`;
+            ? `Visa ${i+1} - ${v.type} (${persons} Person${persons > 1 ? "s" : ""})`
+            : `Visa ${i+1} (${persons} Person${persons > 1 ? "s" : ""})`;
 
           rows.push({
             item: itemName,
+            unit_qty: persons,
+            sale_per_unit: rate,
             sale_sar: total,
             sale_rate: Number(salesRow.visa_sar_rate || 0),
             sale_pkr: total * Number(salesRow.visa_sar_rate || 0)
@@ -118,15 +129,17 @@ if (salesRow.infant_count > 0)
         });
       }
 
-
-
-// TRANSPORT
+      // PACKAGES TRANSPORT (With Vehicle Support)
       if (Array.isArray(salesRow.transport)) {
         salesRow.transport.forEach((t, i) => {
           const base = `Transport ${i + 1}`;
           const label = t.text || t.route || t.description || "";
+          const vehicle = t.vehicle ? ` [${t.vehicle}]` : "";
+          const persons = Number(t.persons) || 1;
+          const rate = Number(t.rate) || 0;
+          const sar = Number(t.amount) || (persons * rate);
+          const perUnit = persons > 0 ? sar / persons : rate;
           
-          // DD/MMM/YYYY Format Logic
           let formattedDate = "";
           if (t.date) {
             const d = new Date(t.date);
@@ -138,10 +151,13 @@ if (salesRow.infant_count > 0)
             }
           }
 
-          const sar = Number(t.amount) || 0;
-          
+          const descPart = label ? ` - ${label}` : "";
+          const itemName = `${base}${formattedDate}${descPart}${vehicle} (${persons} Person${persons > 1 ? "s" : ""})`;
+
           rows.push({
-            item: label ? `${base}${formattedDate} - ${label}` : `${base}${formattedDate}`,
+            item: itemName,
+            unit_qty: persons,
+            sale_per_unit: perUnit,
             sale_sar: sar,
             sale_rate: salesRow.transport_sar_rate || 0,
             sale_pkr: sar * (salesRow.transport_sar_rate || 0)
@@ -149,19 +165,74 @@ if (salesRow.infant_count > 0)
         });
       }
 
-      // ZIYARAT
+      // PACKAGES ZIYARAT (With Vehicle Support)
       if (Array.isArray(salesRow.ziyarat)) {
-        salesRow.ziyarat.forEach((t,i)=>{
+        salesRow.ziyarat.forEach((t, i) => {
           const base = `Ziyarat ${i+1}`;
           const label = t.text || t.route || t.description || "";
-          const sar = Number(t.amount) || 0;
+          const vehicle = t.vehicle ? ` [${t.vehicle}]` : "";
+          const persons = Number(t.persons) || 1;
+          const rate = Number(t.rate) || 0;
+          const sar = Number(t.amount) || (persons * rate);
+          const perUnit = persons > 0 ? sar / persons : rate;
+
+          let formattedDate = "";
+          if (t.date) {
+            const d = new Date(t.date);
+            if (!isNaN(d.getTime())) {
+              const day = String(d.getDate()).padStart(2, "0");
+              const mon = d.toLocaleString("en-US", { month: "short" }).toUpperCase();
+              const year = d.getFullYear();
+              formattedDate = ` (${day}/${mon}/${year})`;
+            }
+          }
+
+          const descPart = label ? ` - ${label}` : "";
+          const itemName = `${base}${formattedDate}${descPart}${vehicle} (${persons} Person${persons > 1 ? "s" : ""})`;
+
           rows.push({
-            item: label ? `${base} - ${label}` : base, // ✅ item میں label include کریں
+            item: itemName,
+            unit_qty: persons,
+            sale_per_unit: perUnit,
             sale_sar: sar,
             sale_rate: salesRow.ziyarat_sar_rate || 0,
             sale_pkr: sar * (salesRow.ziyarat_sar_rate || 0)
           });
         });
+      }
+
+      // AGENT COMMISSION
+      if (salesRow.show_agent_comm) {
+        if (Array.isArray(salesRow.agent_comm) && salesRow.agent_comm.length > 0) {
+          salesRow.agent_comm.forEach((ac, i) => {
+            const persons = Number(ac.persons || ac.qty || 1);
+            const ratePkr = Number(ac.rate || ac.rate_pkr || 0);
+            const totalPkr = Number(ac.total || ac.amount || (persons * ratePkr) || 0);
+            const perUnitPkr = persons > 0 ? (totalPkr / persons) : totalPkr;
+
+            const agentName = ac.agent_name || ac.name || ac.title || ac.type || "";
+            const personText = ` (${persons} Person${persons > 1 ? "s" : ""})`;
+
+            rows.push({
+              item: agentName ? `Agent Commission ${i + 1} - ${agentName}${personText}` : `Agent Commission ${i + 1}${personText}`,
+              unit_qty: persons,
+              sale_per_unit: perUnitPkr,
+              sale_sar: totalPkr,
+              sale_rate: 1,
+              sale_pkr: totalPkr
+            });
+          });
+        } else if (Number(salesRow.agent_comm_total) > 0) {
+          const totalPkr = Number(salesRow.agent_comm_total);
+          rows.push({
+            item: `Agent Commission`,
+            unit_qty: 1,
+            sale_per_unit: totalPkr,
+            sale_sar: totalPkr,
+            sale_rate: 1,
+            sale_pkr: totalPkr
+          });
+        }
       }
     }
 
@@ -193,15 +264,19 @@ if (salesRow.infant_count > 0)
         const type = r.hotel_type?.[i]
           ? r.hotel_type[i].toUpperCase()
           : "";
-        const rooms = Number(r.hotel_rooms?.[i]) || 0;
-        const nights = Number(r.hotel_nights?.[i]) || 0;
+        const rooms = Number(r.hotel_rooms?.[i]) || 1;
+        const nights = Number(r.hotel_nights?.[i]) || 1;
+        const unitFactor = rooms * nights || 1;
+        const totalSar = Number(r.hotel_total?.[i]) || 0;
+        const perUnit = unitFactor > 0 ? totalSar / unitFactor : 0;
 
         rows.push({
           item: `Hotel ${i + 1} - ${name} (${type}${type ? ", " : ""}${rooms} Room${rooms > 1 ? "s" : ""}, ${nights} Night${nights > 1 ? "s" : ""})`,
-          sale_sar: Number(r.hotel_total?.[i]) || 0,
+          unit_qty: unitFactor,
+          sale_per_unit: perUnit,
+          sale_sar: totalSar,
           sale_rate: r.sar_rate || 0,
-          sale_pkr:
-            (Number(r.hotel_total?.[i]) || 0) * (r.sar_rate || 0),
+          sale_pkr: totalSar * (r.sar_rate || 0),
         });
       });
     }
@@ -218,21 +293,25 @@ if (salesRow.infant_count > 0)
 
       const v = q.rows[0];
       (v.rows || []).forEach((r, i) => {
-        const sar = Number(r.total) || Number(r.persons * r.rate) || 0;
-        const rate = Number(v.pkr_rate) || 0;
+        const persons = Number(r.persons) || 1;
+        const rate = Number(r.rate) || 0;
+        const sar = Number(r.total) || (persons * rate);
+        const perUnit = persons > 0 ? sar / persons : rate;
+        const pkrRate = Number(v.pkr_rate) || 0;
 
         const itemName = r.type
-          ? `Visa ${i + 1} - ${r.type} (${r.persons} Person${r.persons > 1 ? "s" : ""})`
-          : `Visa (${r.persons} Person${r.persons > 1 ? "s" : ""})`;
+          ? `Visa ${i + 1} - ${r.type} (${persons} Person${persons > 1 ? "s" : ""})`
+          : `Visa (${persons} Person${persons > 1 ? "s" : ""})`;
 
         rows.push({
           item: itemName,
+          unit_qty: persons,
+          sale_per_unit: perUnit,
           sale_sar: sar,
-          sale_rate: rate,
-          sale_pkr: sar * rate
+          sale_rate: pkrRate,
+          sale_pkr: sar * pkrRate
         });
       });
-
     }
 
     // =======================
@@ -247,21 +326,25 @@ if (salesRow.infant_count > 0)
 
       const v = q.rows[0];
       (v.rows || []).forEach((r, i) => {
-        const sar = Number(r.total) || Number(r.persons * r.rate) || 0;
-        const rate = Number(v.pkr_rate) || 0;
+        const persons = Number(r.persons) || 1;
+        const rate = Number(r.rate) || 0;
+        const sar = Number(r.total) || (persons * rate);
+        const perUnit = persons > 0 ? sar / persons : rate;
+        const pkrRate = Number(v.pkr_rate) || 0;
 
         const itemName = r.type
-          ? `Card ${i + 1} - ${r.type} (${r.persons} Person${r.persons > 1 ? "s" : ""})`
-          : `Card (${r.persons} Person${r.persons > 1 ? "s" : ""})`;
+          ? `Card ${i + 1} - ${r.type} (${persons} Person${persons > 1 ? "s" : ""})`
+          : `Card (${persons} Person${persons > 1 ? "s" : ""})`;
 
         rows.push({
           item: itemName,
+          unit_qty: persons,
+          sale_per_unit: perUnit,
           sale_sar: sar,
-          sale_rate: rate,
-          sale_pkr: sar * rate
+          sale_rate: pkrRate,
+          sale_pkr: sar * pkrRate
         });
       });
-
     }
 
     // =======================
@@ -276,26 +359,28 @@ if (salesRow.infant_count > 0)
 
       const v = q.rows[0];
       (v.rows || []).forEach((r, i) => {
-        const sar = Number(r.total) || Number(r.persons * r.rate) || 0;
-        const rate = Number(v.pkr_rate) || 0;
+        const persons = Number(r.persons) || 1;
+        const rate = Number(r.rate) || 0;
+        const sar = Number(r.total) || (persons * rate);
+        const perUnit = persons > 0 ? sar / persons : rate;
+        const pkrRate = Number(v.pkr_rate) || 0;
 
         const itemName = r.type
-          ? `Groups ${i + 1} - ${r.type} (${r.persons} Person${r.persons > 1 ? "s" : ""})`
-          : `Groups (${r.persons} Person${r.persons > 1 ? "s" : ""})`;
+          ? `Groups ${i + 1} - ${r.type} (${persons} Person${persons > 1 ? "s" : ""})`
+          : `Groups (${persons} Person${persons > 1 ? "s" : ""})`;
 
         rows.push({
           item: itemName,
+          unit_qty: persons,
+          sale_per_unit: perUnit,
           sale_sar: sar,
-          sale_rate: rate,
-          sale_pkr: sar * rate
+          sale_rate: pkrRate,
+          sale_pkr: sar * pkrRate
         });
       });
-
     }
 
-
-   
-/* =========================
+    /* =========================
        TRANSPORT ONLY (TRN-)
     ========================= */
     else if (ref_no.startsWith("TRN-")) {
@@ -317,8 +402,13 @@ if (salesRow.infant_count > 0)
         r.rows.forEach((t, i) => {
           const baseItem = `Transport ${i + 1}`;
           const label = t.description || t.text || t.route || "";
+          const vehicle = t.vehicle ? ` [${t.vehicle}]` : "";
+          const persons = Number(t.persons) || 1;
+          const rateVal = Number(t.rate) || 0;
+          const sar = Number(t.total) || Number(t.sar) || Number(t.amount) || (persons * rateVal);
+          const perUnit = persons > 0 ? sar / persons : rateVal;
+          const rate = Number(r.pkr_rate) || 0;
           
-          // Traveling Date Extraction & DD/MMM/YYYY Format Logic
           const rawDate = t.date || t.travelDate || t.travel_date;
           let formattedDate = "";
           
@@ -332,11 +422,13 @@ if (salesRow.infant_count > 0)
             }
           }
 
-          const sar = Number(t.sar) || Number(t.amount) || 0;
-          const rate = Number(r.pkr_rate) || 0;
+          const descPart = label ? ` - ${label}` : "";
+          const itemName = `${baseItem}${formattedDate}${descPart}${vehicle} (${persons} Person${persons > 1 ? "s" : ""})`;
 
           rows.push({
-            item: label ? `${baseItem}${formattedDate} - ${label}` : `${baseItem}${formattedDate}`, // ✅ Traveling Date added
+            item: itemName,
+            unit_qty: persons,
+            sale_per_unit: perUnit,
             sale_sar: sar,
             sale_rate: rate,
             sale_pkr: sar * rate,
@@ -345,9 +437,9 @@ if (salesRow.infant_count > 0)
       }
     }
 
-        /* =========================
-          ZIYARAT ONLY (ZIY-)
-         ========================= */
+    /* =========================
+       ZIYARAT ONLY (ZIY-)
+    ========================= */
     else if (ref_no.startsWith("ZIY-")) {
       const q = await db.query(
         `
@@ -367,23 +459,41 @@ if (salesRow.infant_count > 0)
         r.rows.forEach((t, i) => {
           const baseItem = `Ziyarat ${i + 1}`;
           const label = t.description || t.text || t.route || "";
-
-          const sar = Number(t.sar) || 0;     // ✅ FIX HERE
+          const vehicle = t.vehicle ? ` [${t.vehicle}]` : "";
+          const persons = Number(t.persons) || 1;
+          const rateVal = Number(t.rate) || 0;
+          const sar = Number(t.total) || Number(t.sar) || Number(t.amount) || (persons * rateVal);
+          const perUnit = persons > 0 ? sar / persons : rateVal;
           const rate = Number(r.pkr_rate) || 0;
 
+          const rawDate = t.date || t.travelDate || t.travel_date;
+          let formattedDate = "";
+          
+          if (rawDate) {
+            const d = new Date(rawDate);
+            if (!isNaN(d.getTime())) {
+              const day = String(d.getDate()).padStart(2, "0");
+              const mon = d.toLocaleString("en-US", { month: "short" }).toUpperCase();
+              const year = d.getFullYear();
+              formattedDate = ` (${day}/${mon}/${year})`;
+            }
+        }
+
+          const descPart = label ? ` - ${label}` : "";
+          const itemName = `${baseItem}${formattedDate}${descPart}${vehicle} (${persons} Person${persons > 1 ? "s" : ""})`;
+
           rows.push({
-            item: label ? `${baseItem} - ${label}` : baseItem, // ✅ include route/text in item
-            sale_sar: sar,        // ✅ now works
+            item: itemName,
+            unit_qty: persons,
+            sale_per_unit: perUnit,
+            sale_sar: sar,
             sale_rate: rate,
             sale_pkr: sar * rate,
           });
-        });
-      }
+      });
     }
+  }
 
-    /* =========================
-       TICKETING ONLY (TIC-)
-    ========================= */
     /* =========================
        TICKETING ONLY (TIC-)
     ========================= */
@@ -408,7 +518,6 @@ if (salesRow.infant_count > 0)
 
       const r = q.rows[0];
 
-      /* ========= SAFE ROUTE + AIRLINE TEXT ========= */
       const from = Array.isArray(r.flight_from) ? r.flight_from.join(", ") : r.flight_from || "";
       const to = Array.isArray(r.flight_to) ? r.flight_to.join(", ") : r.flight_to || "";
       const airline = Array.isArray(r.airline) ? r.airline.join(", ") : r.airline || "";
@@ -416,147 +525,138 @@ if (salesRow.infant_count > 0)
       const routeText = from && to ? `${from} → ${to}` : "";
       const extraInfo = [airline, routeText].filter(Boolean).join(" | ");
 
-      /* ========= TICKETS ========= */
-
-      if (r.adult_qty > 0)
+      if (r.adult_qty > 0) {
+        const qty = Number(r.adult_qty);
+        const rate = Number(r.adult_rate);
         rows.push({
-          item: `Ticket – Adult (${r.adult_qty} Person${r.adult_qty > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
-          sale_sar: r.adult_qty * r.adult_rate,
+          item: `Ticket – Adult (${qty} Person${qty > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          unit_qty: qty,
+          sale_per_unit: rate,
+          sale_sar: qty * rate,
           sale_rate: r.pkr_rate,
-          sale_pkr: r.adult_qty * r.adult_rate * r.pkr_rate,
+          sale_pkr: qty * rate * r.pkr_rate,
         });
+      }
 
-      if (r.child_qty > 0)
+      if (r.child_qty > 0) {
+        const qty = Number(r.child_qty);
+        const rate = Number(r.child_rate);
         rows.push({
-          item: `Ticket – Child (${r.child_qty} Person${r.child_qty > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
-          sale_sar: r.child_qty * r.child_rate,
+          item: `Ticket – Child (${qty} Person${qty > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          unit_qty: qty,
+          sale_per_unit: rate,
+          sale_sar: qty * rate,
           sale_rate: r.pkr_rate,
-          sale_pkr: r.child_qty * r.child_rate * r.pkr_rate,
+          sale_pkr: qty * rate * r.pkr_rate,
         });
+      }
 
-      if (r.infant_qty > 0)
+      if (r.infant_qty > 0) {
+        const qty = Number(r.infant_qty);
+        const rate = Number(r.infant_rate);
         rows.push({
-          item: `Ticket – Infant (${r.infant_qty} Person${r.infant_qty > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
-          sale_sar: r.infant_qty * r.infant_rate,
+          item: `Ticket – Infant (${qty} Person${qty > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          unit_qty: qty,
+          sale_per_unit: rate,
+          sale_sar: qty * rate,
           sale_rate: r.pkr_rate,
-          sale_pkr: r.infant_qty * r.infant_rate * r.pkr_rate,
+          sale_pkr: qty * rate * r.pkr_rate,
         });
+      }
 
     } else {
       return res.json({ success: false, error: "Invalid Ref No" });
     }
 
+  const p = await db.query(
+    `SELECT * FROM purchase_entries WHERE ref_no=$1 AND is_deleted=false`,
+    [ref_no]
+  );
 
-
-    /* =========================
-       MERGE PURCHASE (EDIT) ✅
-       SHOW BLANK FOR EMPTY SAR/RATE
-    ========================= */
-    /* =========================
-       MERGE PURCHASE (EDIT) ✅
-       HARD RESET PROFIT IF CLEARED
-    ========================= */
-    const p = await db.query(
-      `SELECT * FROM purchase_entries
-       WHERE ref_no=$1 AND is_deleted=false`,
-      [ref_no]
-    );
-
-    rows = rows.map(r => {
-      const baseItem = r.item.split(" - ")[0];
-
-      const x = p.rows.find(p =>
-        p.item === r.item || p.item === baseItem
+  // 🔹 UNIVERSAL SMART UPDATE: Har module/prefix ke liye agar item ki description/route change hui hai toh purane record ko UPDATE kar do
+  for (const r of rows) {
+    const basePrefix = r.item.split(" - ")[0].split(" (")[0]; // Jaise "Transport 2", "Hotel 1", "Ziyarat 1", "Visa 1", etc.
+    
+    const existingMatch = p.rows.find(oldP => oldP.item !== r.item && oldP.item.startsWith(basePrefix));
+    
+    if (existingMatch) {
+      await db.query(
+        `UPDATE purchase_entries SET item=$1 WHERE id=$2`,
+        [r.item, existingMatch.id]
       );
+      existingMatch.item = r.item;
+    }
+  }
 
-      // =====================
-      // SALE (ALWAYS FIXED)
-      // =====================
-      const sale_sar  = Number(r.sale_sar)  || 0;
-      const sale_rate = Number(r.sale_rate) || 0;
-      const sale_pkr  = sale_sar * sale_rate;
+  rows = rows.map(r => {
+    const baseItem = r.item.split(" - ")[0].split(" (")[0];
+    const x = p.rows.find(p => p.item === r.item || p.item.startsWith(baseItem));
 
-      // =====================
-      // PURCHASE (🔥 FINAL LOGIC)
-      // =====================
+    const sale_sar = Number(r.sale_sar) || 0;
+    const sale_rate = Number(r.sale_rate) || 0;
+    const sale_pkr = sale_sar * sale_rate;
+    const unit_qty = Number(r.unit_qty) || 1;
 
-      // RAW values (frontend first, DB only if frontend never sent)
-      const raw_sar =
-        r.purchase_sar !== undefined ? r.purchase_sar : x?.purchase_sar;
+    const raw_sar = r.purchase_sar !== undefined ? r.purchase_sar : x?.purchase_sar;
+    const raw_rate = r.purchase_rate !== undefined ? r.purchase_rate : x?.purchase_rate;
+    const raw_per_unit = x?.purchase_per_unit;
 
-      const raw_rate =
-        r.purchase_rate !== undefined ? r.purchase_rate : x?.purchase_rate;
+    const sarCleared = raw_sar === "" || raw_sar === null || Number(raw_sar) === 0;
+    const rateCleared = raw_rate === "" || raw_rate === null || Number(raw_rate) === 0;
 
-      // 👉 AGAR USER NE CLEAR KIYA HAI
-      const sarCleared  = raw_sar === "" || raw_sar === null || Number(raw_sar) === 0;
-      const rateCleared = raw_rate === "" || raw_rate === null || Number(raw_rate) === 0;
+    let purchase_sar = "";
+    let purchase_rate = "";
+    let purchase_per_unit = "";
+    let purchase_pkr = 0;
+    let profit = 0;
 
-      let purchase_sar  = "";
-      let purchase_rate = "";
-      let purchase_pkr  = 0;
-      let profit        = 0;
+    if (!sarCleared && !rateCleared) {
+      purchase_sar = Number(raw_sar);
+      purchase_rate = Number(raw_rate);
+      purchase_per_unit = raw_per_unit ? Number(raw_per_unit) : (purchase_sar / unit_qty);
+      purchase_pkr = purchase_sar * purchase_rate;
+      profit = sale_pkr - purchase_pkr;
+    }
 
-      if (!sarCleared && !rateCleared) {
-        purchase_sar  = Number(raw_sar);
-        purchase_rate = Number(raw_rate);
+    return {
+      ...r,
+      unit_qty,
+      sale_per_unit: r.sale_per_unit || (sale_sar / unit_qty),
+      sale_sar,
+      sale_rate,
+      sale_pkr,
+      purchase_per_unit,
+      purchase_sar,
+      purchase_rate,
+      purchase_pkr,
+      profit,
+      supplier_code: x?.supplier_code ?? "",
+      supplier_name: x?.supplier_name ?? ""
+    };
+  });
 
-        purchase_pkr = purchase_sar * purchase_rate;
-        profit = sale_pkr - purchase_pkr;
-      }
+  let customer_name = "";
+  const cust = await db.query(`
+    SELECT customer_name FROM bookings WHERE ref_no=$1
+    UNION SELECT customer_name FROM hotels WHERE ref_no=$1
+    UNION SELECT customer_name FROM visa WHERE ref_no=$1
+    UNION SELECT customer_name FROM card WHERE ref_no=$1
+    UNION SELECT customer_name FROM groups WHERE ref_no=$1
+    UNION SELECT customer_name FROM ticketing WHERE ref_no=$1
+    UNION SELECT customer_name FROM transport WHERE ref_no=$1
+    UNION SELECT customer_name FROM ziyarat WHERE ref_no=$1
+    LIMIT 1
+  `, [ref_no]);
 
-      return {
-        ...r,
+  if (cust.rows.length) {
+    customer_name = cust.rows[0].customer_name;
+  }
 
-        sale_sar,
-        sale_rate,
-        sale_pkr,
-
-        purchase_sar,      // "" if cleared
-        purchase_rate,     // "" if cleared
-        purchase_pkr,      // 0 if cleared
-        profit,            // 🔥 GUARANTEED 0 if cleared
-
-        supplier_code: x?.supplier_code ?? "",
-        supplier_name: x?.supplier_name ?? ""
-      };
-    });
-
-    // customer name nikaalo bookings / other tables se
-let customer_name = "";
-
-const cust = await db.query(`
-  SELECT customer_name FROM bookings WHERE ref_no=$1
-  UNION
-  SELECT customer_name FROM hotels WHERE ref_no=$1
-  UNION
-  SELECT customer_name FROM visa WHERE ref_no=$1
-  UNION
-  SELECT customer_name FROM card WHERE ref_no=$1
-  UNION
-  SELECT customer_name FROM groups WHERE ref_no=$1
-  UNION
-  SELECT customer_name FROM ticketing WHERE ref_no=$1
-  UNION
-  SELECT customer_name FROM transport WHERE ref_no=$1
-  UNION
-  SELECT customer_name FROM ziyarat WHERE ref_no=$1
-  LIMIT 1
-`, [ref_no]);
-
-if (cust.rows.length) {
-  customer_name = cust.rows[0].customer_name;
-}
-
-res.json({
-  success: true,
-  is_edit: isEdit,
-  customer_name,   // ⭐ ADD THIS
-  rows
-});
+  return res.json({ success: true, is_edit: isEdit, customer_name, rows });
      
   } catch(err){
     console.error("PURCHASE LOAD ERROR:", err);
-    res.json({ success:false, error: err.message });
+    return res.json({ success:false, error: err.message });
   }
 });
 

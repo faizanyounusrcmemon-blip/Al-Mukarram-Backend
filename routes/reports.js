@@ -288,9 +288,7 @@ router.get("/all", async (req, res) => {
 });
 
 /* =====================================================
-   🔹 SUPPLIER WISE PURCHASE REPORT
-   - Fetch from purchase_entries
-   - Supplier list from suppliers table
+   🔹 SUPPLIER WISE PURCHASE REPORT (FIXED MATH ENGINE)
 ===================================================== */
 router.get("/supplier-purchase", async (req, res) => {
   try {
@@ -319,11 +317,45 @@ router.get("/supplier-purchase", async (req, res) => {
       LEFT JOIN suppliers s
         ON s.supplier_code = p.supplier_code
       WHERE p.is_deleted = false
-        AND (p.purchase_sar > 0 OR p.purchase_rate > 0)  -- ✅ یہ شرط
+        AND (p.purchase_sar > 0 OR p.purchase_rate > 0)
       ORDER BY p.created_at DESC
     `;
 
-    const { rows } = await db.query(query);
+    const dbResult = await db.query(query);
+
+    // 🧮 SMART MULTI-FACTOR QUANTITY CALCULATOR ENGINE
+    const rows = dbResult.rows.map(r => {
+      let qty = 1;
+      const itemStr = r.item || "";
+
+      // Case 1: Hotel (Rooms * Nights) -> e.g. "1 Room, 16 Nights"
+      const roomMatch = itemStr.match(/(\d+)\s*Room/i);
+      const nightMatch = itemStr.match(/(\d+)\s*Night/i);
+
+      if (roomMatch || nightMatch) {
+        const rooms = roomMatch ? Number(roomMatch[1]) || 1 : 1;
+        const nights = nightMatch ? Number(nightMatch[1]) || 1 : 1;
+        qty = rooms * nights;
+      } 
+      // Case 2: Persons (Visa, Ticket, Card, Group) -> e.g. "2 Persons"
+      else {
+        const personMatch = itemStr.match(/(\d+)\s*Person/i);
+        if (personMatch) {
+          qty = Number(personMatch[1]) || 1;
+        }
+      }
+
+      if (qty <= 0) qty = 1;
+
+      const saleSar = Number(r.sale_sar) || 0;
+      const purchSar = Number(r.purchase_sar) || 0;
+
+      return {
+        ...r,
+        sale_per_unit: saleSar / qty,
+        purchase_per_unit: purchSar / qty
+      };
+    });
 
     const sup = await db.query(`
       SELECT supplier_name
@@ -339,7 +371,7 @@ router.get("/supplier-purchase", async (req, res) => {
     });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ success: false });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -499,44 +531,52 @@ router.get("/customer-sale", async (req, res) => {
 
       const cCode = s.customer_code || "WALKIN";
 
-      // Tickets
+      // Tickets (Adult)
       if (s.adult_count > 0) {
-        const sar = s.adult_count * s.adult_rate;
+        const qty = Number(s.adult_count) || 1;
+        const sar = qty * Number(s.adult_rate || 0);
         const rate = Number(s.flight_sar_rate) || 0;
         rows.push({
           booking_date: s.booking_date,
           customer_code: cCode,
           customer_name: s.customer_name || "Walk-in Customer",
           ref_no: s.ref_no,
-          item: `Ticket – Adult (${s.adult_count} Person${s.adult_count > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          item: `Ticket – Adult (${qty} Person${qty > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          sale_per_unit: Number(s.adult_rate || 0),
           sale_sar: sar,
           sale_rate: rate,
           sale_pkr: sar * rate,
         });
       }
+      // Tickets (Child)
       if (s.child_count > 0) {
-        const sar = s.child_count * s.child_rate;
+        const qty = Number(s.child_count) || 1;
+        const sar = qty * Number(s.child_rate || 0);
         const rate = Number(s.flight_sar_rate) || 0;
         rows.push({
           booking_date: s.booking_date,
           customer_code: cCode,
           customer_name: s.customer_name || "Walk-in Customer",
           ref_no: s.ref_no,
-          item: `Ticket – Child (${s.child_count} Person${s.child_count > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          item: `Ticket – Child (${qty} Person${qty > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          sale_per_unit: Number(s.child_rate || 0),
           sale_sar: sar,
           sale_rate: rate,
           sale_pkr: sar * rate,
         });
       }
+      // Tickets (Infant)
       if (s.infant_count > 0) {
-        const sar = s.infant_count * s.infant_rate;
+        const qty = Number(s.infant_count) || 1;
+        const sar = qty * Number(s.infant_rate || 0);
         const rate = Number(s.flight_sar_rate) || 0;
         rows.push({
           booking_date: s.booking_date,
           customer_code: cCode,
           customer_name: s.customer_name || "Walk-in Customer",
           ref_no: s.ref_no,
-          item: `Ticket – Infant (${s.infant_count} Person${s.infant_count > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          item: `Ticket – Infant (${qty} Person${qty > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          sale_per_unit: Number(s.infant_rate || 0),
           sale_sar: sar,
           sale_rate: rate,
           sale_pkr: sar * rate,
@@ -546,10 +586,12 @@ router.get("/customer-sale", async (req, res) => {
       // Hotels
       if (Array.isArray(s.hotels)) {
         s.hotels.forEach((h, i) => {
-          const rooms = Number(h.rooms) || 0;
-          const nights = Number(h.nights) || 0;
+          const rooms = Number(h.rooms) || 1;
+          const nights = Number(h.nights) || 1;
+          const qty = rooms * nights;
           const type = h.type ? h.type.toUpperCase() : "";
           const sar = Number(h.total) || 0;
+          const perUnit = qty > 0 ? sar / qty : sar;
           const rate = Number(s.hotel_sar_rate) || 0;
           rows.push({
             booking_date: s.booking_date,
@@ -557,6 +599,7 @@ router.get("/customer-sale", async (req, res) => {
             customer_name: s.customer_name || "Walk-in Customer",
             ref_no: s.ref_no,
             item: `Hotel ${i + 1} - ${h.hotel || ""} (${type}${type ? ", " : ""}${rooms} Room${rooms > 1 ? "s" : ""}, ${nights} Night${nights > 1 ? "s" : ""})`,
+            sale_per_unit: perUnit,
             sale_sar: sar,
             sale_rate: rate,
             sale_pkr: sar * rate,
@@ -567,9 +610,10 @@ router.get("/customer-sale", async (req, res) => {
       // Visa
       if (Array.isArray(s.visa)) {
         s.visa.forEach((v, i) => {
-          const persons = Number(v.persons || 0);
+          const persons = Number(v.persons || 1);
           const rateVal = Number(v.rate || 0);
           const sar = Number(v.total ?? (persons * rateVal));
+          const perUnit = persons > 0 ? sar / persons : sar;
           const rate = Number(s.visa_sar_rate) || 0;
           rows.push({
             booking_date: s.booking_date,
@@ -577,6 +621,7 @@ router.get("/customer-sale", async (req, res) => {
             customer_name: s.customer_name || "Walk-in Customer",
             ref_no: s.ref_no,
             item: v.type ? `Visa ${i + 1} - ${v.type} (${persons} Person${persons > 1 ? "s" : ""})` : `Visa ${i + 1} (${persons} Person${persons > 1 ? "s" : ""})`,
+            sale_per_unit: perUnit,
             sale_sar: sar,
             sale_rate: rate,
             sale_pkr: sar * rate,
@@ -584,13 +629,17 @@ router.get("/customer-sale", async (req, res) => {
         });
       }
 
-      // Transport (With Date & Detail)
+      // Package Transport (With Vehicle & Persons Support)
       if (Array.isArray(s.transport)) {
         s.transport.forEach((t, i) => {
           const base = `Transport ${i + 1}`;
           const label = t.text || t.route || t.description || "";
+          const vehicle = t.vehicle ? ` [${t.vehicle}]` : "";
+          const persons = Number(t.persons) || 1;
+          const rateVal = Number(t.rate) || 0;
+          const sar = Number(t.amount) || Number(t.total) || (persons * rateVal);
+          const perUnit = persons > 0 ? sar / persons : rateVal;
 
-          // DD/MMM/YYYY Date Formatting
           let formattedDate = "";
           if (t.date) {
             const d = new Date(t.date);
@@ -602,7 +651,8 @@ router.get("/customer-sale", async (req, res) => {
             }
           }
 
-          const sar = Number(t.amount) || 0;
+          const descPart = label ? ` - ${label}` : "";
+          const itemName = `${base}${formattedDate}${descPart}${vehicle} (${persons} Person${persons > 1 ? "s" : ""})`;
           const rate = Number(s.transport_sar_rate) || 0;
 
           rows.push({
@@ -610,7 +660,8 @@ router.get("/customer-sale", async (req, res) => {
             customer_code: cCode,
             customer_name: s.customer_name || "Walk-in Customer",
             ref_no: s.ref_no,
-            item: label ? `${base}${formattedDate} - ${label}` : `${base}${formattedDate}`,
+            item: itemName,
+            sale_per_unit: perUnit,
             sale_sar: sar,
             sale_rate: rate,
             sale_pkr: sar * rate,
@@ -618,12 +669,30 @@ router.get("/customer-sale", async (req, res) => {
         });
       }
 
-      // Ziyarat (With Label Detail)
+      // Package Ziyarat (With Vehicle & Persons Support)
       if (Array.isArray(s.ziyarat)) {
         s.ziyarat.forEach((t, i) => {
           const base = `Ziyarat ${i + 1}`;
           const label = t.text || t.route || t.description || "";
-          const sar = Number(t.amount) || 0;
+          const vehicle = t.vehicle ? ` [${t.vehicle}]` : "";
+          const persons = Number(t.persons) || 1;
+          const rateVal = Number(t.rate) || 0;
+          const sar = Number(t.amount) || Number(t.total) || (persons * rateVal);
+          const perUnit = persons > 0 ? sar / persons : rateVal;
+
+          let formattedDate = "";
+          if (t.date) {
+            const d = new Date(t.date);
+            if (!isNaN(d.getTime())) {
+              const day = String(d.getDate()).padStart(2, "0");
+              const mon = d.toLocaleString("en-US", { month: "short" }).toUpperCase();
+              const year = d.getFullYear();
+              formattedDate = ` (${day}/${mon}/${year})`;
+            }
+          }
+
+          const descPart = label ? ` - ${label}` : "";
+          const itemName = `${base}${formattedDate}${descPart}${vehicle} (${persons} Person${persons > 1 ? "s" : ""})`;
           const rate = Number(s.ziyarat_sar_rate) || 0;
 
           rows.push({
@@ -631,7 +700,8 @@ router.get("/customer-sale", async (req, res) => {
             customer_code: cCode,
             customer_name: s.customer_name || "Walk-in Customer",
             ref_no: s.ref_no,
-            item: label ? `${base} - ${label}` : base,
+            item: itemName,
+            sale_per_unit: perUnit,
             sale_sar: sar,
             sale_rate: rate,
             sale_pkr: sar * rate,
@@ -639,14 +709,13 @@ router.get("/customer-sale", async (req, res) => {
         });
       }
 
-      // ========= AGENT COMMISSION =========
+      // Agent Commission
       if (s.show_agent_comm) {
         if (Array.isArray(s.agent_comm) && s.agent_comm.length > 0) {
           s.agent_comm.forEach((ac, i) => {
             const persons = Number(ac.persons || ac.qty || 1);
             const ratePkr = Number(ac.rate || ac.rate_pkr || 0);
             const totalPkr = Number(ac.total || ac.amount || (persons * ratePkr) || 0);
-
             const agentName = ac.agent_name || ac.name || ac.title || ac.type || "";
             const personText = ` (${persons} Person${persons > 1 ? "s" : ""})`;
 
@@ -655,9 +724,8 @@ router.get("/customer-sale", async (req, res) => {
               customer_code: cCode,
               customer_name: s.customer_name || "Walk-in Customer",
               ref_no: s.ref_no,
-              item: agentName 
-                ? `Agent Commission ${i + 1} - ${agentName}${personText}` 
-                : `Agent Commission ${i + 1}${personText}`,
+              item: agentName ? `Agent Commission ${i + 1} - ${agentName}${personText}` : `Agent Commission ${i + 1}${personText}`,
+              sale_per_unit: persons > 0 ? totalPkr / persons : totalPkr,
               sale_sar: totalPkr,
               sale_rate: 1,
               sale_pkr: totalPkr,
@@ -671,6 +739,7 @@ router.get("/customer-sale", async (req, res) => {
             customer_name: s.customer_name || "Walk-in Customer",
             ref_no: s.ref_no,
             item: `Agent Commission`,
+            sale_per_unit: totalPkr,
             sale_sar: totalPkr,
             sale_rate: 1,
             sale_pkr: totalPkr,
@@ -687,9 +756,11 @@ router.get("/customer-sale", async (req, res) => {
       const cCode = r.customer_code || "WALKIN";
       (r.hotel_name || []).forEach((name, i) => {
         const type = r.hotel_type?.[i] ? r.hotel_type[i].toUpperCase() : "";
-        const rooms = Number(r.hotel_rooms?.[i]) || 0;
-        const nights = Number(r.hotel_nights?.[i]) || 0;
+        const rooms = Number(r.hotel_rooms?.[i]) || 1;
+        const nights = Number(r.hotel_nights?.[i]) || 1;
+        const qty = rooms * nights;
         const sar = Number(r.hotel_total?.[i]) || 0;
+        const perUnit = qty > 0 ? sar / qty : sar;
         const rate = Number(r.sar_rate) || 0;
         rows.push({
           booking_date: r.booking_date,
@@ -697,6 +768,7 @@ router.get("/customer-sale", async (req, res) => {
           customer_name: r.customer_name || "Walk-in Customer",
           ref_no: r.ref_no,
           item: `Hotel ${i + 1} - ${name} (${type}${type ? ", " : ""}${rooms} Room${rooms > 1 ? "s" : ""}, ${nights} Night${nights > 1 ? "s" : ""})`,
+          sale_per_unit: perUnit,
           sale_sar: sar,
           sale_rate: rate,
           sale_pkr: sar * rate,
@@ -711,14 +783,17 @@ router.get("/customer-sale", async (req, res) => {
     visaRes.rows.forEach((v) => {
       const cCode = v.customer_code || "WALKIN";
       (v.rows || []).forEach((r, i) => {
-        const sar = Number(r.total) || Number(r.persons * r.rate) || 0;
+        const persons = Number(r.persons || 1);
+        const sar = Number(r.total) || Number(persons * Number(r.rate || 0)) || 0;
+        const perUnit = persons > 0 ? sar / persons : sar;
         const rate = Number(v.pkr_rate) || 0;
         rows.push({
           booking_date: v.booking_date,
           customer_code: cCode,
           customer_name: v.customer_name || "Walk-in Customer",
           ref_no: v.ref_no,
-          item: r.type ? `Visa ${i + 1} - ${r.type} (${r.persons} Person${r.persons > 1 ? "s" : ""})` : `Visa (${r.persons} Person${r.persons > 1 ? "s" : ""})`,
+          item: r.type ? `Visa ${i + 1} - ${r.type} (${persons} Person${persons > 1 ? "s" : ""})` : `Visa (${persons} Person${persons > 1 ? "s" : ""})`,
+          sale_per_unit: perUnit,
           sale_sar: sar,
           sale_rate: rate,
           sale_pkr: sar * rate,
@@ -733,14 +808,17 @@ router.get("/customer-sale", async (req, res) => {
     cardRes.rows.forEach((v) => {
       const cCode = v.customer_code || "WALKIN";
       (v.rows || []).forEach((r, i) => {
-        const sar = Number(r.total) || Number(r.persons * r.rate) || 0;
+        const persons = Number(r.persons || 1);
+        const sar = Number(r.total) || Number(persons * Number(r.rate || 0)) || 0;
+        const perUnit = persons > 0 ? sar / persons : sar;
         const rate = Number(v.pkr_rate) || 0;
         rows.push({
           booking_date: v.booking_date,
           customer_code: cCode,
           customer_name: v.customer_name || "Walk-in Customer",
           ref_no: v.ref_no,
-          item: r.type ? `Card ${i + 1} - ${r.type} (${r.persons} Person${r.persons > 1 ? "s" : ""})` : `Card (${r.persons} Person${r.persons > 1 ? "s" : ""})`,
+          item: r.type ? `Card ${i + 1} - ${r.type} (${persons} Person${persons > 1 ? "s" : ""})` : `Card (${persons} Person${persons > 1 ? "s" : ""})`,
+          sale_per_unit: perUnit,
           sale_sar: sar,
           sale_rate: rate,
           sale_pkr: sar * rate,
@@ -755,14 +833,17 @@ router.get("/customer-sale", async (req, res) => {
     grpRes.rows.forEach((v) => {
       const cCode = v.customer_code || "WALKIN";
       (v.rows || []).forEach((r, i) => {
-        const sar = Number(r.total) || Number(r.persons * r.rate) || 0;
+        const persons = Number(r.persons || 1);
+        const sar = Number(r.total) || Number(persons * Number(r.rate || 0)) || 0;
+        const perUnit = persons > 0 ? sar / persons : sar;
         const rate = Number(v.pkr_rate) || 0;
         rows.push({
           booking_date: v.booking_date,
           customer_code: cCode,
           customer_name: v.customer_name || "Walk-in Customer",
           ref_no: v.ref_no,
-          item: r.type ? `Groups ${i + 1} - ${r.type} (${r.persons} Person${r.persons > 1 ? "s" : ""})` : `Groups (${r.persons} Person${r.persons > 1 ? "s" : ""})`,
+          item: r.type ? `Groups ${i + 1} - ${r.type} (${persons} Person${persons > 1 ? "s" : ""})` : `Groups (${persons} Person${persons > 1 ? "s" : ""})`,
+          sale_per_unit: perUnit,
           sale_sar: sar,
           sale_rate: rate,
           sale_pkr: sar * rate,
@@ -785,39 +866,45 @@ router.get("/customer-sale", async (req, res) => {
       const rate = Number(r.pkr_rate) || 0;
 
       if (r.adult_qty > 0) {
-        const sar = r.adult_qty * r.adult_rate;
+        const qty = Number(r.adult_qty) || 1;
+        const sar = qty * Number(r.adult_rate || 0);
         rows.push({
           booking_date: r.booking_date,
           customer_code: cCode,
           customer_name: r.customer_name || "Walk-in Customer",
           ref_no: r.ref_no,
-          item: `Ticket – Adult (${r.adult_qty} Person${r.adult_qty > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          item: `Ticket – Adult (${qty} Person${qty > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          sale_per_unit: Number(r.adult_rate || 0),
           sale_sar: sar,
           sale_rate: rate,
           sale_pkr: sar * rate,
         });
       }
       if (r.child_qty > 0) {
-        const sar = r.child_qty * r.child_rate;
+        const qty = Number(r.child_qty) || 1;
+        const sar = qty * Number(r.child_rate || 0);
         rows.push({
           booking_date: r.booking_date,
           customer_code: cCode,
           customer_name: r.customer_name || "Walk-in Customer",
           ref_no: r.ref_no,
-          item: `Ticket – Child (${r.child_qty} Person${r.child_qty > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          item: `Ticket – Child (${qty} Person${qty > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          sale_per_unit: Number(r.child_rate || 0),
           sale_sar: sar,
           sale_rate: rate,
           sale_pkr: sar * rate,
         });
       }
       if (r.infant_qty > 0) {
-        const sar = r.infant_qty * r.infant_rate;
+        const qty = Number(r.infant_qty) || 1;
+        const sar = qty * Number(r.infant_rate || 0);
         rows.push({
           booking_date: r.booking_date,
           customer_code: cCode,
           customer_name: r.customer_name || "Walk-in Customer",
           ref_no: r.ref_no,
-          item: `Ticket – Infant (${r.infant_qty} Person${r.infant_qty > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          item: `Ticket – Infant (${qty} Person${qty > 1 ? "s" : ""})${extraInfo ? " - " + extraInfo : ""}`,
+          sale_per_unit: Number(r.infant_rate || 0),
           sale_sar: sar,
           sale_rate: rate,
           sale_pkr: sar * rate,
@@ -825,7 +912,7 @@ router.get("/customer-sale", async (req, res) => {
       }
     });
 
-// 8. TRANSPORT ONLY (TRN-)
+    // 8. TRANSPORT ONLY (TRN-)
     const trnRes = await db.query(
       `SELECT * FROM transport WHERE is_deleted = false ORDER BY booking_date DESC`
     );
@@ -835,11 +922,14 @@ router.get("/customer-sale", async (req, res) => {
         r.rows.forEach((t, i) => {
           const base = `Transport ${i + 1}`;
           const label = t.description || t.text || t.route || "";
+          const vehicle = t.vehicle ? ` [${t.vehicle}]` : "";
+          const persons = Number(t.persons) || 1;
+          const rateVal = Number(t.rate) || 0;
+          const sar = Number(t.total) || Number(t.sar) || Number(t.amount) || (persons * rateVal);
+          const perUnit = persons > 0 ? sar / persons : rateVal;
 
-          // 🔹 Traveling Date Extraction (Checking all possible property names & parent row date)
           const rawDate = t.date || t.travelDate || t.travel_date || r.date || r.travel_date;
           let formattedDate = "";
-          
           if (rawDate) {
             const d = new Date(rawDate);
             if (!isNaN(d.getTime())) {
@@ -850,7 +940,8 @@ router.get("/customer-sale", async (req, res) => {
             }
           }
 
-          const sar = Number(t.sar || t.amount) || 0;
+          const descPart = label ? ` - ${label}` : "";
+          const itemName = `${base}${formattedDate}${descPart}${vehicle} (${persons} Person${persons > 1 ? "s" : ""})`;
           const rate = Number(r.pkr_rate) || 0;
 
           rows.push({
@@ -858,7 +949,8 @@ router.get("/customer-sale", async (req, res) => {
             customer_code: cCode,
             customer_name: r.customer_name || "Walk-in Customer",
             ref_no: r.ref_no,
-            item: label ? `${base}${formattedDate} - ${label}` : `${base}${formattedDate}`,
+            item: itemName,
+            sale_per_unit: perUnit,
             sale_sar: sar,
             sale_rate: rate,
             sale_pkr: sar * rate,
@@ -877,7 +969,26 @@ router.get("/customer-sale", async (req, res) => {
         r.rows.forEach((t, i) => {
           const base = `Ziyarat ${i + 1}`;
           const label = t.description || t.text || t.route || "";
-          const sar = Number(t.sar || t.amount) || 0;
+          const vehicle = t.vehicle ? ` [${t.vehicle}]` : "";
+          const persons = Number(t.persons) || 1;
+          const rateVal = Number(t.rate) || 0;
+          const sar = Number(t.total) || Number(t.sar) || Number(t.amount) || (persons * rateVal);
+          const perUnit = persons > 0 ? sar / persons : rateVal;
+
+          const rawDate = t.date || t.travelDate || t.travel_date || r.date || r.travel_date;
+          let formattedDate = "";
+          if (rawDate) {
+            const d = new Date(rawDate);
+            if (!isNaN(d.getTime())) {
+              const day = String(d.getDate()).padStart(2, "0");
+              const mon = d.toLocaleString("en-US", { month: "short" }).toUpperCase();
+              const year = d.getFullYear();
+              formattedDate = ` (${day}/${mon}/${year})`;
+            }
+          }
+
+          const descPart = label ? ` - ${label}` : "";
+          const itemName = `${base}${formattedDate}${descPart}${vehicle} (${persons} Person${persons > 1 ? "s" : ""})`;
           const rate = Number(r.pkr_rate) || 0;
 
           rows.push({
@@ -885,7 +996,8 @@ router.get("/customer-sale", async (req, res) => {
             customer_code: cCode,
             customer_name: r.customer_name || "Walk-in Customer",
             ref_no: r.ref_no,
-            item: label ? `${base} - ${label}` : base,
+            item: itemName,
+            sale_per_unit: perUnit,
             sale_sar: sar,
             sale_rate: rate,
             sale_pkr: sar * rate,
@@ -1116,10 +1228,12 @@ router.get("/customer-sale-detail-ledger", async (req, res) => {
         });
       });
 
-      // Transport
+      // Transport (With Vehicle & Persons Support)
       safeParse(s.transport).forEach((t, i) => {
         const base = `Transport ${i + 1}`;
         const label = t.text || t.route || t.description || "";
+        const vehicle = t.vehicle ? ` [${t.vehicle}]` : "";
+        const persons = Number(t.persons) || 1;
         
         let formattedDate = "";
         if (t.date) {
@@ -1132,6 +1246,8 @@ router.get("/customer-sale-detail-ledger", async (req, res) => {
           }
         }
 
+        const descPart = label ? ` - ${label}` : "";
+        const itemName = `${base}${formattedDate}${descPart}${vehicle} (${persons} Person${persons > 1 ? "s" : ""})`;
         const sar = Math.round(Number(t.amount || t.total || 0));
         const rate = Number(s.transport_sar_rate) || Number(s.pkr_rate) || 0;
         rows.push({
@@ -1140,7 +1256,7 @@ router.get("/customer-sale-detail-ledger", async (req, res) => {
           customer_code: cCode || "WALKIN",
           customer_name: cName,
           ref_no: s.ref_no,
-          item: label ? `${base}${formattedDate} - ${label}` : `${base}${formattedDate}`,
+          item: itemName,
           type: "SALE",
           sale_sar: sar,
           sale_rate: rate,
@@ -1149,10 +1265,26 @@ router.get("/customer-sale-detail-ledger", async (req, res) => {
         });
       });
 
-      // Ziyarat
+      // Ziyarat (With Vehicle & Persons Support)
       safeParse(s.ziyarat).forEach((z, i) => {
         const base = `Ziyarat ${i + 1}`;
         const label = z.text || z.route || z.description || "";
+        const vehicle = z.vehicle ? ` [${z.vehicle}]` : "";
+        const persons = Number(z.persons) || 1;
+
+        let formattedDate = "";
+        if (z.date) {
+          const d = new Date(z.date);
+          if (!isNaN(d.getTime())) {
+            const day = String(d.getDate()).padStart(2, "0");
+            const mon = d.toLocaleString("en-US", { month: "short" }).toUpperCase();
+            const year = d.getFullYear();
+            formattedDate = ` (${day}/${mon}/${year})`;
+          }
+        }
+
+        const descPart = label ? ` - ${label}` : "";
+        const itemName = `${base}${formattedDate}${descPart}${vehicle} (${persons} Person${persons > 1 ? "s" : ""})`;
         const sar = Math.round(Number(z.amount || z.total || 0));
         const rate = Number(s.ziyarat_sar_rate) || Number(s.pkr_rate) || 0;
         rows.push({
@@ -1161,7 +1293,7 @@ router.get("/customer-sale-detail-ledger", async (req, res) => {
           customer_code: cCode || "WALKIN",
           customer_name: cName,
           ref_no: s.ref_no,
-          item: label ? `${base} - ${label}` : base,
+          item: itemName,
           type: "SALE",
           sale_sar: sar,
           sale_rate: rate,
@@ -1350,28 +1482,44 @@ router.get("/customer-sale-detail-ledger", async (req, res) => {
           subRows.forEach((rowItem, i) => {
             let itemLabel = "";
 
-if (t.name === "transport") {
-            const base = `Transport ${i + 1}`;
-            const label = rowItem.description || rowItem.text || rowItem.route || "";
-            let formattedDate = "";
-            
-            // 🔹 Traveling Date Extraction & DD/MMM/YYYY Format Logic
-            const rawDate = rowItem.date || rowItem.travelDate || rowItem.travel_date || r.date || r.travel_date;
-            if (rawDate) {
-              const d = new Date(rawDate);
-              if (!isNaN(d.getTime())) {
-                const day = String(d.getDate()).padStart(2, "0");
-                const mon = d.toLocaleString("en-US", { month: "short" }).toUpperCase();
-                const year = d.getFullYear();
-                formattedDate = ` (${day}/${mon}/${year})`;
+            if (t.name === "transport") {
+              const base = `Transport ${i + 1}`;
+              const label = rowItem.description || rowItem.text || rowItem.route || "";
+              const vehicle = rowItem.vehicle ? ` [${rowItem.vehicle}]` : "";
+              const persons = Number(rowItem.persons) || 1;
+              
+              let formattedDate = "";
+              const rawDate = rowItem.date || rowItem.travelDate || rowItem.travel_date || r.date || r.travel_date;
+              if (rawDate) {
+                const d = new Date(rawDate);
+                if (!isNaN(d.getTime())) {
+                  const day = String(d.getDate()).padStart(2, "0");
+                  const mon = d.toLocaleString("en-US", { month: "short" }).toUpperCase();
+                  const year = d.getFullYear();
+                  formattedDate = ` (${day}/${mon}/${year})`;
+                }
               }
-
-              }
-              itemLabel = label ? `${base}${formattedDate} - ${label}` : `${base}${formattedDate}`;
+              const descPart = label ? ` - ${label}` : "";
+              itemLabel = `${base}${formattedDate}${descPart}${vehicle} (${persons} Person${persons > 1 ? "s" : ""})`;
             } else if (t.name === "ziyarat") {
               const base = `Ziyarat ${i + 1}`;
               const label = rowItem.description || rowItem.text || rowItem.route || "";
-              itemLabel = label ? `${base} - ${label}` : base;
+              const vehicle = rowItem.vehicle ? ` [${rowItem.vehicle}]` : "";
+              const persons = Number(rowItem.persons) || 1;
+
+              let formattedDate = "";
+              const rawDate = rowItem.date || rowItem.travelDate || rowItem.travel_date || r.date || r.travel_date;
+              if (rawDate) {
+                const d = new Date(rawDate);
+                if (!isNaN(d.getTime())) {
+                  const day = String(d.getDate()).padStart(2, "0");
+                  const mon = d.toLocaleString("en-US", { month: "short" }).toUpperCase();
+                  const year = d.getFullYear();
+                  formattedDate = ` (${day}/${mon}/${year})`;
+                }
+              }
+              const descPart = label ? ` - ${label}` : "";
+              itemLabel = `${base}${formattedDate}${descPart}${vehicle} (${persons} Person${persons > 1 ? "s" : ""})`;
             } else {
               const persons = Number(rowItem.persons || 0);
               itemLabel = rowItem.type
@@ -1427,7 +1575,7 @@ if (t.name === "transport") {
                (SELECT customer_name FROM ticketing WHERE TRIM(LOWER(ref_no)) = TRIM(LOWER(cp.ref_no)) AND customer_name IS NOT NULL AND customer_name != '' AND customer_name != 'Walk-in Customer' LIMIT 1),
                (SELECT customer_name FROM transport WHERE TRIM(LOWER(ref_no)) = TRIM(LOWER(cp.ref_no)) AND customer_name IS NOT NULL AND customer_name != '' AND customer_name != 'Walk-in Customer' LIMIT 1),
                (SELECT customer_name FROM ziyarat WHERE TRIM(LOWER(ref_no)) = TRIM(LOWER(cp.ref_no)) AND customer_name IS NOT NULL AND customer_name != '' AND customer_name != 'Walk-in Customer' LIMIT 1),
-               'Walk-in Customer'
+              'Walk-in Customer'
              ) AS resolved_name
       FROM customer_payments cp
       LEFT JOIN public.banks b ON b.id = cp.bank_profile_id
@@ -1494,7 +1642,7 @@ if (t.name === "transport") {
       }
     });
 
-// 8. CHRONOLOGICAL SORTING (SAME DATE PAR SALE PEHLE, PAYMENT BAAD MEIN)
+    // 8. CHRONOLOGICAL SORTING (SAME DATE PAR SALE PEHLE, PAYMENT BAAD MEIN)
     rows.sort((a, b) => {
       const dateA = new Date(a.date).getTime();
       const dateB = new Date(b.date).getTime();
