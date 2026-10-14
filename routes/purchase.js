@@ -1057,7 +1057,7 @@ router.delete("/delete/:ref_no", async (req, res) => {
 
 
 /* =====================================================
-   PURCHASE DETAIL ✅ SUPPLIER INCLUDED
+   PURCHASE DETAIL ✅ DYNAMIC PER UNIT CALCULATION
 ===================================================== */
 router.get("/detail/:ref_no", async (req, res) => {
   try {
@@ -1107,7 +1107,25 @@ router.get("/detail/:ref_no", async (req, res) => {
       return res.json({ success: false, error: "Purchase entry not found" });
     }
 
-    const totals = q.rows.reduce(
+    const rows = q.rows.map(r => {
+      const saleSar = Number(r.sale_sar) || 0;
+      const purchSar = Number(r.purchase_sar) || 0;
+
+      // Item text se quantity/unit factor extract karna (jaise: 2 Persons, Rooms, etc.)
+      let qty = 1;
+      const match = r.item.match(/\((\d+)\s*(?:Person|Room|Night)/i);
+      if (match && match[1]) {
+        qty = Number(match[1]) || 1;
+      }
+
+      return {
+        ...r,
+        sale_per_unit: qty > 0 ? saleSar / qty : saleSar,
+        purchase_per_unit: qty > 0 && purchSar > 0 ? purchSar / qty : 0
+      };
+    });
+
+    const totals = rows.reduce(
       (a, r) => {
         a.sale_pkr += Number(r.sale_pkr || 0);
         a.purchase_pkr += Number(r.purchase_pkr || 0);
@@ -1117,7 +1135,7 @@ router.get("/detail/:ref_no", async (req, res) => {
       { sale_pkr: 0, purchase_pkr: 0, profit: 0 }
     );
 
-    res.json({ success: true, rows: q.rows, totals });
+    res.json({ success: true, rows, totals });
 
   } catch (err) {
     console.error("PURCHASE DETAIL ERROR:", err);
