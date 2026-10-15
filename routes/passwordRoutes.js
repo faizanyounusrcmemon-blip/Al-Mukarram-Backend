@@ -170,135 +170,116 @@ router.post("/verify-password", async (req, res) => {
 
 /**
  * =====================================================
- * 4. UPDATE PASSWORD
- *
- * URL:
- * /api/system-settings/update
- *
- * Yahan bhi old password dobara verify hoga.
- * Isliye direct API request se bhi protection rahegi.
+ * 4. UPDATE PASSWORD OR DESCRIPTION
+ * URL: /api/system-settings/update
  * =====================================================
  */
 router.post("/update", async (req, res) => {
+  const { key_name, oldPassword, newPassword, description } = req.body;
 
-  const {
-    key_name,
-    oldPassword,
-    newPassword
-  } = req.body;
-
-  if (!key_name || !oldPassword || !newPassword) {
-
+  if (!key_name) {
     return res.status(400).json({
       success: false,
-      message: "All fields are required!"
+      message: "System key name is required!"
     });
   }
 
   try {
+    /* ==========================================
+       CASE 1: UPDATE DESCRIPTION ONLY
+    ========================================== */
+    if (description !== undefined) {
+      const updateDescResult = await db.query(
+        `
+        UPDATE public.system_passwords
+        SET description = $1
+        WHERE key_name = $2
+        `,
+        [description, key_name]
+      );
+
+      if (updateDescResult.rowCount === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "System key configuration not found."
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: "Description updated successfully!"
+      });
+    }
 
     /* ==========================================
-       A. CURRENT PASSWORD GET
+       CASE 2: UPDATE PASSWORD
     ========================================== */
+    if (!oldPassword || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: "All fields are required for password change!"
+      });
+    }
 
+    // A. GET CURRENT PASSWORD
     const checkQuery = await db.query(
       "SELECT password_val FROM public.system_passwords WHERE key_name = $1",
       [key_name]
     );
 
     if (checkQuery.rows.length === 0) {
-
       return res.status(404).json({
         success: false,
-        message:
-          "System key configuration not found"
+        message: "System key configuration not found."
       });
     }
 
-    const currentPassword =
-      checkQuery.rows[0].password_val;
+    const currentPassword = checkQuery.rows[0].password_val;
 
-
-    /* ==========================================
-       B. OLD PASSWORD VERIFY
-    ========================================== */
-
+    // B. OLD PASSWORD VERIFY
     if (oldPassword !== currentPassword) {
-
       return res.status(403).json({
         success: false,
-        message:
-          "Incorrect Old Password! Please try again."
+        message: "Incorrect Old Password! Please try again."
       });
     }
 
-
-    /* ==========================================
-       C. NEW PASSWORD SAME AS OLD CHECK
-    ========================================== */
-
+    // C. NEW PASSWORD SAME AS OLD CHECK
     if (newPassword === currentPassword) {
-
       return res.status(400).json({
         success: false,
-        message:
-          "New password must be different from the old password."
+        message: "New password must be different from the old password."
       });
     }
 
-
-    /* ==========================================
-       D. UPDATE DATABASE
-    ========================================== */
-
+    // D. UPDATE DATABASE
     const updateResult = await db.query(
       `
       UPDATE public.system_passwords
       SET password_val = $1
       WHERE key_name = $2
       `,
-      [
-        newPassword,
-        key_name
-      ]
+      [newPassword, key_name]
     );
 
-
-    /* ==========================================
-       E. CHECK UPDATE
-    ========================================== */
-
     if (updateResult.rowCount === 0) {
-
       return res.status(500).json({
         success: false,
-        message:
-          "Failed to apply updates to database table."
+        message: "Failed to apply updates to database table."
       });
     }
 
-
-    /* ==========================================
-       F. SUCCESS
-    ========================================== */
-
-    res.json({
+    return res.json({
       success: true,
-      message:
-        "System password changed successfully!"
+      message: "System password changed successfully!"
     });
 
   } catch (err) {
+    console.error("Update System Password/Description Engine Error:", err);
 
-    console.error(
-      "Update System Password Engine Error:",
-      err
-    );
-
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message:
-        "Server error while updating password.",
+      message: "Server error while processing request.",
       error: err.message
     });
   }
