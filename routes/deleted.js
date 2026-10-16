@@ -363,4 +363,126 @@ router.post("/permanent-delete", async (req, res) => {
   }
 });
 
+/* =====================================================
+   BULK RESTORE ROUTE
+===================================================== */
+router.post("/bulk-restore", async (req, res) => {
+  try {
+    const { items, password } = req.body; // items = [{ type, ref_no }, ...]
+
+    if (!password) {
+      return res.status(400).json({ success: false, error: "Password required" });
+    }
+
+    if (!items || !items.length) {
+      return res.status(400).json({ success: false, error: "No items selected for restore" });
+    }
+
+    const passCheck = await db.query(
+      "SELECT password_val FROM public.system_passwords WHERE key_name = 'restore_report_pass'"
+    );
+
+    if (passCheck.rows.length === 0 || password !== passCheck.rows[0].password_val) {
+      return res.status(401).json({ success: false, error: "Invalid password" });
+    }
+
+    let restoredCount = 0;
+
+    for (const item of items) {
+      const uppercaseType = item.type?.toUpperCase();
+      let tableName = "";
+      let columnKey = "ref_no";
+
+      if (uppercaseType === "PACKAGE") tableName = "bookings";
+      else if (uppercaseType === "HOTEL") tableName = "hotels";
+      else if (uppercaseType === "TICKETING") tableName = "ticketing";
+      else if (uppercaseType === "TRANSPORT") tableName = "transport";
+      else if (uppercaseType === "ZIYARAT") tableName = "ziyarat";
+      else if (uppercaseType === "VISA") tableName = "visa";
+      else if (uppercaseType === "CARD") tableName = "card";
+      else if (uppercaseType === "GROUPS") tableName = "groups";
+      else if (uppercaseType === "PURCHASE") tableName = "purchase_entries";
+      else if (uppercaseType === "SUPPLIER") tableName = "suppliers";
+      else if (uppercaseType === "CUSTOMER") tableName = "customers";
+      else if (uppercaseType === "USER") { tableName = "users"; columnKey = "id"; }
+      else if (uppercaseType === "BANK") { tableName = "banks"; columnKey = "id"; }
+
+      if (tableName) {
+        const updateRes = await db.query(
+          `UPDATE ${tableName} SET is_deleted = false WHERE ${columnKey} = $1 AND is_deleted = true`,
+          [item.ref_no]
+        );
+        if (updateRes.rowCount > 0) restoredCount++;
+      }
+    }
+
+    return res.json({ success: true, message: `${restoredCount} records successfully restored.` });
+
+  } catch (err) {
+    console.error("BULK RESTORE ERROR:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/* =====================================================
+   BULK PERMANENT DELETE ROUTE
+===================================================== */
+router.post("/bulk-permanent-delete", async (req, res) => {
+  try {
+    const { items, password } = req.body; // items = [{ type, ref_no }, ...]
+
+    if (!password) {
+      return res.status(400).json({ success: false, error: "Password required" });
+    }
+
+    if (!items || !items.length) {
+      return res.status(400).json({ success: false, error: "No items selected for deletion" });
+    }
+
+    const passCheck = await db.query(
+      "SELECT password_val FROM public.system_passwords WHERE key_name = 'perm_delete_report_pass'"
+    );
+
+    if (passCheck.rows.length === 0 || password !== passCheck.rows[0].password_val) {
+      return res.status(401).json({ success: false, error: "Invalid password" });
+    }
+
+    let deletedCount = 0;
+
+    for (const item of items) {
+      const uppercaseType = item.type?.toUpperCase();
+      let table = "";
+      let lookupColumn = "ref_no";
+
+      if (uppercaseType === "PACKAGE") table = "bookings";
+      else if (uppercaseType === "HOTEL") table = "hotels";
+      else if (uppercaseType === "TICKETING") table = "ticketing";
+      else if (uppercaseType === "VISA") table = "visa";
+      else if (uppercaseType === "CARD") table = "card";
+      else if (uppercaseType === "GROUPS") table = "groups";
+      else if (uppercaseType === "TRANSPORT") table = "transport";
+      else if (uppercaseType === "ZIYARAT") table = "ziyarat";
+      else if (uppercaseType === "PURCHASE") table = "purchase_entries";
+      else if (uppercaseType === "SUPPLIER") { table = "suppliers"; lookupColumn = "supplier_code"; }
+      else if (uppercaseType === "CUSTOMER") { table = "customers"; lookupColumn = "customer_code"; }
+      else if (uppercaseType === "USER") { table = "users"; lookupColumn = "id"; }
+      else if (uppercaseType === "BANK") { table = "banks"; lookupColumn = "id"; }
+
+      if (table) {
+        const q = await db.query(
+          `DELETE FROM ${table} WHERE ${lookupColumn} = $1 AND is_deleted = true`,
+          [item.ref_no]
+        );
+        if (q.rowCount > 0) deletedCount++;
+      }
+    }
+
+    return res.json({ success: true, message: `${deletedCount} records permanently deleted.` });
+
+  } catch (err) {
+    console.error("BULK PERMANENT DELETE ERROR:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;
