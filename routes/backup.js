@@ -38,15 +38,15 @@ const TABLES = [
   "card",
   "groups",
   "transport",
+  "ziyarat",
   "customers",
-  "purchase_entries",
+  "suppliers",
   "users",
   "bank_transactions",
   "cash_transactions",
   "customer_payments",
-  "suppliers",
   "supplier_payments",
-  "ziyarat",
+  "purchase_entries",
   "archive_snapshots",
   "archive_balances", 
   "archive_profit_monthly",
@@ -216,36 +216,57 @@ async function restoreTable(client, table, csv) {
   }
 }
 
-/* ================= FULL RESTORE ================= */
-router.post("/restore/full", async (req, res) => {
-  const isMatched = await verifySystemPassword('backup_action_pass', req.body.password);
+/* ================= STREAMING FULL RESTORE ROUTE (SSE) ================= */
+router.get("/restore-stream", async (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+
+  const sendLog = (msg, color = "#00ff00") => {
+    res.write(`data: ${JSON.stringify({ msg, color })}\n\n`);
+  };
+
+  const { file, password } = req.query;
+
+  const isMatched = await verifySystemPassword('backup_action_pass', password);
   if (!isMatched) {
-    return res.json({ success: false, error: "Wrong password" });
+    sendLog("ERROR: Wrong password authentication failed!", "#f43f5e");
+    res.write(`data: ${JSON.stringify({ success: false, error: "Wrong password" })}\n\n`);
+    return res.end();
   }
 
   const client = await db.connect();
   try {
-    const zipData = await supabase.storage.from(BUCKET).download(req.body.file);
+    sendLog(`[INIT] Downloading backup file from storage: ${file}`, "#38bdf8");
+    const zipData = await supabase.storage.from(BUCKET).download(file);
+    
+    if (!zipData.data) {
+      sendLog("ERROR: Backup file not found in storage bucket!", "#f43f5e");
+      res.write(`data: ${JSON.stringify({ success: false, error: "Backup file not found" })}\n\n`);
+      return res.end();
+    }
+
     const zip = new AdmZip(Buffer.from(await zipData.data.arrayBuffer()));
 
     await client.query("BEGIN");
+    sendLog("TRANSACTION STARTED: Wiping and restoring tables...", "#fbbf24");
 
     for (const table of TABLES) {
-      console.log("RESTORING TABLE:", table);
       const entry = zip.getEntry(`${table}.csv`);
       
       if (!entry) {
-        console.log("NOT FOUND IN ZIP:", table);
+        sendLog(`[SKIP] Table ${table}.csv not found in zip archive.`, "#94a3b8");
         continue;
       }
       
+      sendLog(`> RESTORING TABLE: ${table}`, "#fbbf24");
       await restoreTable(client, table, entry.getData().toString("utf8"));
-      console.log("SUCCESSFULLY RESTORED:", table);
+      sendLog(`SUCCESSFULLY RESTORED: ${table}`, "#00ff00");
     }
 
-    console.log("SYNCHRONIZING SEQUENCES AFTER FULL RESTORE...");
+    sendLog("> SYNCHRONIZING SEQUENCES AFTER RESTORE...", "#38bdf8");
     
-// 1. Safe Booking Sequence Sync
+    // 1. Safe Booking Sequence Sync
     await client.query(`
       DO $$ BEGIN
         IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname='booking_ref_seq') THEN
@@ -272,13 +293,15 @@ router.post("/restore/full", async (req, res) => {
     `);
 
     await client.query("COMMIT");
-    console.log("FULL RESTORE COMPLETED SUCCESSFULLY!");
+    sendLog("FULL RESTORE COMPLETED SUCCESSFULLY!", "#00ff00");
     
-    res.json({ success: true, progress: 100 });
+    res.write(`data: ${JSON.stringify({ success: true, progress: 100 })}\n\n`);
+    res.end();
   } catch (e) {
     await client.query("ROLLBACK");
-    console.error("CRITICAL RESTORE ERROR DETECTED:", e.message);
-    res.json({ success: false, error: e.message });
+    sendLog(`CRITICAL ERROR: ${e.message}`, "#f43f5e");
+    res.write(`data: ${JSON.stringify({ success: false, error: e.message })}\n\n`);
+    res.end();
   } finally {
     client.release();
   }

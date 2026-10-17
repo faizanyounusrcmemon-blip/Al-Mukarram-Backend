@@ -364,11 +364,11 @@ router.post("/permanent-delete", async (req, res) => {
 });
 
 /* =====================================================
-   BULK RESTORE ROUTE
+   BULK RESTORE ROUTE (WITH DETAILED ERROR ALERTS)
 ===================================================== */
 router.post("/bulk-restore", async (req, res) => {
   try {
-    const { items, password } = req.body; // items = [{ type, ref_no }, ...]
+    const { items, password } = req.body; 
 
     if (!password) {
       return res.status(400).json({ success: false, error: "Password required" });
@@ -387,9 +387,81 @@ router.post("/bulk-restore", async (req, res) => {
     }
 
     let restoredCount = 0;
+    const errors = []; // 👈 Bloack/Failed Ref Numbers log karne ke liye
 
     for (const item of items) {
       const uppercaseType = item.type?.toUpperCase();
+
+      /* BULK PURCHASE RESTORE VALIDATION */
+      if (uppercaseType === "PURCHASE") {
+        // 1. Check if purchase is already active
+        const activeCheck = await db.query(
+          `SELECT id FROM purchase_entries WHERE ref_no = $1 AND is_deleted = false LIMIT 1`,
+          [item.ref_no]
+        );
+        if (activeCheck.rows.length > 0) {
+          errors.push(`<b>${item.ref_no}</b>: Purchase already active hai (duplicate restore blocked).`);
+          continue;
+        }
+
+        // 2. Check if deleted purchase exists
+        const deletedPurchase = await db.query(
+          `SELECT ref_no, SUM(sale_pkr) AS purchase_sale_pkr FROM purchase_entries WHERE ref_no = $1 AND is_deleted = true GROUP BY ref_no`,
+          [item.ref_no]
+        );
+        if (deletedPurchase.rows.length === 0) {
+          errors.push(`<b>${item.ref_no}</b>: Deleted purchase record nahi mila.`);
+          continue;
+        }
+
+        // 3. Check if active main sale exists
+        const activeSaleCheck = await db.query(
+          `
+          SELECT ref_no, total_pkr FROM (
+            SELECT ref_no, total_pkr FROM bookings WHERE ref_no = $1 AND is_deleted = false
+            UNION ALL
+            SELECT ref_no, total_pkr FROM hotels WHERE ref_no = $1 AND is_deleted = false
+            UNION ALL
+            SELECT ref_no, total_pkr FROM ticketing WHERE ref_no = $1 AND is_deleted = false
+            UNION ALL
+            SELECT ref_no, total_pkr FROM visa WHERE ref_no = $1 AND is_deleted = false
+            UNION ALL
+            SELECT ref_no, total_pkr FROM card WHERE ref_no = $1 AND is_deleted = false
+            UNION ALL
+            SELECT ref_no, total_pkr FROM groups WHERE ref_no = $1 AND is_deleted = false
+            UNION ALL
+            SELECT ref_no, total_pkr FROM transport WHERE ref_no = $1 AND is_deleted = false
+            UNION ALL
+            SELECT ref_no, total_pkr FROM ziyarat WHERE ref_no = $1 AND is_deleted = false
+          ) active_sales LIMIT 1;
+          `,
+          [item.ref_no]
+        );
+
+        if (activeSaleCheck.rows.length === 0) {
+          errors.push(`<b>${item.ref_no}</b>: Main Sale delete ho chuki hai (Active main sale missing).`);
+          continue;
+        }
+
+        // 4. Amount Mismatch Check
+        const activeSalePkr = Number(activeSaleCheck.rows[0].total_pkr || 0);
+        const purchaseSalePkr = Number(deletedPurchase.rows[0].purchase_sale_pkr || 0);
+
+        if (Math.abs(activeSalePkr - purchaseSalePkr) > 1) {
+          errors.push(`<b>${item.ref_no}</b>: Amount Mismatch! Main Sale PKR (${activeSalePkr.toLocaleString()}) vs Purchase Sale PKR (${purchaseSalePkr.toLocaleString()}).`);
+          continue;
+        }
+
+        // Perform Restore
+        const updateRes = await db.query(
+          `UPDATE purchase_entries SET is_deleted = false WHERE ref_no = $1 AND is_deleted = true`,
+          [item.ref_no]
+        );
+        if (updateRes.rowCount > 0) restoredCount++;
+        continue;
+      }
+
+      /* OTHER RECORD TYPES RESTORE */
       let tableName = "";
       let columnKey = "ref_no";
 
@@ -401,7 +473,6 @@ router.post("/bulk-restore", async (req, res) => {
       else if (uppercaseType === "VISA") tableName = "visa";
       else if (uppercaseType === "CARD") tableName = "card";
       else if (uppercaseType === "GROUPS") tableName = "groups";
-      else if (uppercaseType === "PURCHASE") tableName = "purchase_entries";
       else if (uppercaseType === "SUPPLIER") tableName = "suppliers";
       else if (uppercaseType === "CUSTOMER") tableName = "customers";
       else if (uppercaseType === "USER") { tableName = "users"; columnKey = "id"; }
@@ -413,10 +484,16 @@ router.post("/bulk-restore", async (req, res) => {
           [item.ref_no]
         );
         if (updateRes.rowCount > 0) restoredCount++;
+        else errors.push(`<b>${item.ref_no}</b>: Record restore nahi ho saka.`);
       }
     }
 
-    return res.json({ success: true, message: `${restoredCount} records successfully restored.` });
+    return res.json({ 
+      success: true, 
+      restoredCount, 
+      errors,
+      message: `${restoredCount} records successfully restored.` 
+    });
 
   } catch (err) {
     console.error("BULK RESTORE ERROR:", err);
@@ -425,11 +502,11 @@ router.post("/bulk-restore", async (req, res) => {
 });
 
 /* =====================================================
-   BULK PERMANENT DELETE ROUTE
+   BULK PERMANENT DELETE ROUTE (STRICT is_deleted = true CHECK)
 ===================================================== */
 router.post("/bulk-permanent-delete", async (req, res) => {
   try {
-    const { items, password } = req.body; // items = [{ type, ref_no }, ...]
+    const { items, password } = req.body; 
 
     if (!password) {
       return res.status(400).json({ success: false, error: "Password required" });
@@ -469,6 +546,7 @@ router.post("/bulk-permanent-delete", async (req, res) => {
       else if (uppercaseType === "BANK") { table = "banks"; lookupColumn = "id"; }
 
       if (table) {
+        // Strict check: sirf wahi delete ho jiska is_deleted = true ho
         const q = await db.query(
           `DELETE FROM ${table} WHERE ${lookupColumn} = $1 AND is_deleted = true`,
           [item.ref_no]
